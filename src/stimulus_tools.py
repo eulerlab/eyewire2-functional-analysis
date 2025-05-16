@@ -14,7 +14,7 @@ def create_displayed_movie_sequence(
         scan_sequence_id: int,
 ) -> np.ndarray:
     """
-
+    Create stimulus movie shown in recording based on train and test movie and the specific random sequence used.
     :param train_movie: shape: (channel, time, height, width)
     :param test_movie: shape: (channel, time, height, width)
     :param random_sequence: shape: (num_clips, num_scan_sequences)

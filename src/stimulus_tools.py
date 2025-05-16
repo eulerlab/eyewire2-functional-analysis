@@ -21,7 +21,7 @@ def create_displayed_movie_sequence(
     :param scan_sequence_id: integer to define what scan sequence was used
     :return: the full movie in the desired random sequence
     """
-    # add first test movie
+    # add test movie shown at the start
     full_movie_array = [test_movie]
 
     # add first 54 train clips
@@ -41,5 +41,6 @@ def create_displayed_movie_sequence(
 
     # add test movie shown at the end
     full_movie_array.append(test_movie)
+    # concatenate array over temporal dimension
     full_movie = np.concatenate(full_movie_array, axis=1)
     return full_movie

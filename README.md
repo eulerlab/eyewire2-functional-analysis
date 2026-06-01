@@ -11,9 +11,10 @@ The code in this repository is under MIT license. All data in the repository, as
 This repository hosts the functional data from OGB-1 recordings in the Eyewire II dataset.
 
 This is work-in-progress and currently holds:
-- pre-processed calcium traces from recordings over five recording fields, stored as [parquet files](data/preprocessed-data/)
-- morphological data (proofread cell master list, 2P-to-EM ROI mapping) in [data/morphological-data/](data/morphological-data/)
-- tutorial notebooks to [plot raw traces](notebooks/tutorial/plot_raw_data/plot_raw_data.ipynb) and [plot a data overview](notebooks/tutorial/plot_data_overview/plot_data_overview.ipynb)
+- notebooks to generate the calcium related figures from the Eyewire II resource paper [notebooks/analysis/manuscript/*.ipynb](notebooks/analysis/manuscript/)
+- pre-processed calcium traces from recordings over five recording fields, stored as [parquet files/*.parquet](data/preprocessed-data/)
+- morphological data (proofread cell master list, 2P-to-EM ROI mapping) in [data/morphological-data/*](data/morphological-data/)
+- tutorial notebooks to facilitate data exploration [notebooks/tutorial/*.ipynb](notebooks/tutorial/)
 
 Documentation is still incomplete:
 - a description of the preprocessed data can be found [here](data/preprocessed-data/README.md).

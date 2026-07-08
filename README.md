@@ -8,13 +8,14 @@ The code in this repository is under MIT license. All data in the repository, as
 
 # Eyewire II: Functional data
 
-This repository hosts the functional data from OGB-1 recordings in the Eyewire II dataset.
+This repository hosts tools to analyse the functional data from OGB-1 recordings in the Eyewire II dataset.
 
-This is work-in-progress and currently holds:
-- notebooks to generate the calcium related figures from the Eyewire II resource paper [notebooks/analysis/manuscript/*.ipynb](notebooks/analysis/manuscript/)
-- pre-processed calcium traces from recordings over five recording fields, stored as parquet files and downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) (see [data/data-2p/README.md](data/data-2p/README.md))
-- morphological data (proofread cell master list, 2P-to-EM ROI mapping) in [data/morphological-data/*](data/morphological-data/)
+The following files are included:
 - tutorial notebooks to facilitate data exploration [notebooks/tutorial/*.ipynb](notebooks/tutorial/)
+- analysis notebooks [notebooks/analysis/*.ipynb](notebooks/analysis/)
+- spreadsheet data that are needed to map 2p to EM data (proofread cell main list, 2P-to-EM ROI mapping) in [data/spreadsheets/*](data/spreadsheets/)
+- pre-processed calcium traces from recordings over five recording fields, stored as parquet files and downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) (see [data/data-2p/README.md](data/data-2p/README.md))
+
 
 Documentation is still incomplete:
 - a description of the 2P data can be found [here](data/data-2p/README.md).
@@ -49,21 +50,6 @@ df_rois, df_fields, df_outline = data_loader.load_all_dfs(data_folder)
 ```
 
 You can also load each DataFrame individually using `load_df_rois()`, `load_df_fields()`, or `load_df_outline()`.
-
-To merge the ROI-level data with the morphological master spreadsheet:
-
-```python
-morph_folder = "data/morphological-data"
-version = "2026-03-17"  # replace with the date of your master list
-
-df_rois_morph = data_loader.load_df_rois_morph(
-    morph_folder=morph_folder,
-    morph_spreadsheet_filename=f"Eyewire II Proofread Cells Master List - All Cells {version}.csv",
-    nuc_col_master="Final NucID",
-    seg_col_master="Final SegID",
-    data_folder=data_folder,
-)
-```
 
 See the tutorial notebooks for full usage examples:
 - [plot_raw_data.ipynb](notebooks/tutorial/plot_raw_data/plot_raw_data.ipynb) — load data and plot raw + preprocessed traces for individual ROIs

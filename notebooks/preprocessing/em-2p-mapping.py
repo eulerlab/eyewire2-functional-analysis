@@ -23,7 +23,7 @@ FIG_DIR = os.path.join(HERE, "figures")
 os.makedirs(FIG_DIR, exist_ok=True)
 
 data_root = os.path.join(HERE, "..", "..", "data")
-data_folder = f"{data_root}/preprocessed-data"
+data_folder = f"{data_root}/data-2p"
 morph_folder = f"{data_root}/morphological-data"
 
 MAP_FILE = "Eyewire II Proofread Cells Main List - EM-2p-mapping 2026-07-08e v2-final.csv"
@@ -400,9 +400,8 @@ def main():
     )
     df_out = df_out[['2p-Field', '2p-ROI', 'matched', 'not_a_cell', 'Nuc Coords', 'Estimated EM Coords']]
 
-    out_path = os.path.join(morph_folder, OUT_FILE)
-    df_out.to_csv(out_path, index=False)
-    print(f"wrote {out_path}")
+    df_out.to_csv(OUT_FILE, index=False)
+    print(f"wrote {OUT_FILE}")
 
     # --- Neuroglancer link ---------------------------------------------------
     #

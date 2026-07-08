@@ -12,12 +12,12 @@ This repository hosts the functional data from OGB-1 recordings in the Eyewire I
 
 This is work-in-progress and currently holds:
 - notebooks to generate the calcium related figures from the Eyewire II resource paper [notebooks/analysis/manuscript/*.ipynb](notebooks/analysis/manuscript/)
-- pre-processed calcium traces from recordings over five recording fields, stored as [parquet files/*.parquet](data/preprocessed-data/)
+- pre-processed calcium traces from recordings over five recording fields, stored as parquet files and downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) (see [data/data-2p/README.md](data/data-2p/README.md))
 - morphological data (proofread cell master list, 2P-to-EM ROI mapping) in [data/morphological-data/*](data/morphological-data/)
 - tutorial notebooks to facilitate data exploration [notebooks/tutorial/*.ipynb](notebooks/tutorial/)
 
 Documentation is still incomplete:
-- a description of the preprocessed data can be found [here](data/preprocessed-data/README.md).
+- a description of the 2P data can be found [here](data/data-2p/README.md).
 - a description of the stimuli can be found [here](data/stimuli/README.md).
 
 Feel free to open issues to ask questions and request features!
@@ -32,6 +32,10 @@ To use the code in this repository out of the box, you can use [uv](https://docs
 
 On the first call, `uv run` will install all dependencies into a `uv` virtual environment (placed in the `.venv` folder), which is then invoked on all further calls of `uv run`.
 
+### Downloading the data
+
+The pre-processed 2P data is not included in this repository — download it from the [eyewire2-data Hugging Face dataset](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) and place it in `data/data-2p/`. See [data/data-2p/README.md](data/data-2p/README.md) for details on the contents.
+
 ### Loading the data
 
 All data loading is handled by `eyewire2_functional_analysis.data_loader`. The easiest way to load all three DataFrames at once is:
@@ -39,7 +43,7 @@ All data loading is handled by `eyewire2_functional_analysis.data_loader`. The e
 ```python
 from eyewire2_functional_analysis import data_loader
 
-data_folder = "data/preprocessed-data"
+data_folder = "data/data-2p"
 
 df_rois, df_fields, df_outline = data_loader.load_all_dfs(data_folder)
 ```

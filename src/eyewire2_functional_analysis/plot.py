@@ -1,10 +1,26 @@
 import numpy as np
 import skeliner as sk
+from matplotlib import pyplot as plt
 from matplotlib import patches as patches
+
+from eyewire2_functional_analysis.skeleton import rotate_skel
 
 MB_DIRS              = (0,  180,   45,  225,  90, 270, 135, 315)
 MB_DIRS_SYMBOLS_V_UP = ('↓', '↑', '↙', '↗', '←', '→', '↖', '↘')
 MB_DIRS_SYMBOLS_D_UP = ('↑', '↓', '↗', '↙', '→', '←', '↘', '↖')
+
+# Time (s) of stimulus onset / direction reversal / offset within a moving-bar
+# snippet, matching the vlines used in plot_dataframe.plot_df_chirp_and_bar.
+BAR_STIM_TIMES = (1.152, 2.432, 3.712)
+
+# (row, col, sorted_direction_index) placement of each of the 8 moving-bar
+# directions (sorted ascending: 0, 45, 90, ..., 315 deg) around a 3x3 compass
+# grid, leaving the center cell (1, 1) free for the polar tuning plot. 180 deg
+# is placed at the top (rather than 0 deg / East as in a standard math-convention
+# compass), with the remaining directions following clockwise from there.
+DIR_GRID_LAYOUT = ((0, 0, 5), (0, 1, 4), (0, 2, 3),
+                    (1, 0, 6),           (1, 2, 2),
+                    (2, 0, 7), (2, 1, 0), (2, 2, 1))
 
 
 def plot_chirp(ax, row, stimulus_ms=None, plot_hline=True, plot_vlines=False, lw=1):
@@ -125,6 +141,104 @@ def plot_bar_dir(ax, row, ventral_up=True, lw=1):
     ax.set_yticklabels([])
 
 
+def plot_bar_dir_grid(fig, gs, row):
+    """Plot per-direction moving-bar averages plus a polar tuning plot in a 3x3 grid.
+
+    Reproduces the DS/OS summary layout of the original DataJoint ``plot1``
+    method: the 8 moving-bar directions are arranged around a compass (sorted
+    ascending: 0, 45, 90, ..., 315 deg), with a polar tuning plot in the center
+    cell showing the direction-tuning curve and the preferred-direction vector.
+
+    Args:
+        fig: Matplotlib Figure to add axes to.
+        gs: A ``matplotlib.gridspec.GridSpec`` or ``SubplotSpec`` (the latter must
+            support ``.subgridspec(3, 3)``) region to lay the 3x3 grid out in.
+        row: DataFrame row containing ``'bar_snippets'``, ``'bar_snippets_dt'``,
+            ``'bar_pref_dir'``, ``'bar_ds_index'``, ``'bar_ds_pvalue'``,
+            ``'bar_pref_or'``, ``'bar_os_index'``, and ``'bar_os_pvalue'``.
+
+    Returns:
+        tuple: ``(axs, ax_polar)`` -- dict of the 8 Cartesian axes keyed by
+        ``(row, col)`` grid position, and the center polar Axes.
+    """
+    sub_gs = gs.subgridspec(3, 3) if hasattr(gs, "subgridspec") else gs
+
+    sorted_directions, _, avg_sorted_resp = preprocess_mb_snippets(row['bar_snippets'])
+    dt = row['bar_snippets_dt']
+    # Recompute dir_component from the raw snippets rather than using the stored
+    # 'bar_dir_component' column, which is min-max normalized (min forced to 0,
+    # max forced to 1) and so cannot be compared in amplitude across cells.
+    # This raw SVD-derived vector is only normalized to unit L2-norm and can dip
+    # slightly negative; clip to 0 since the polar axes (rmin=0) can't render
+    # negative radii anyway.
+    _, dir_component = get_time_dir_kernels(avg_sorted_resp, dt=dt)
+    dir_component = np.clip(dir_component, 0, None)
+
+    ymin, ymax = np.min(avg_sorted_resp), np.max(avg_sorted_resp)
+
+    axs = {}
+    for r, c, dir_idx in DIR_GRID_LAYOUT:
+        ax = fig.add_subplot(sub_gs[r, c])
+        axs[(r, c)] = ax
+        trace = avg_sorted_resp[:, dir_idx]
+        ax.fill_between(np.arange(trace.size) * dt, trace, color='red', alpha=0.5)
+        for t in BAR_STIM_TIMES:
+            ax.axvline(t, color='gray', linestyle='--')
+        ax.set_ylim(ymin, ymax)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    ax_polar = fig.add_subplot(sub_gs[1, 1], projection='polar', frameon=False)
+    # Match the surrounding grid, which places 180 deg at the top (rather than
+    # the default 0 deg / East) going clockwise from there.
+    ax_polar.set_theta_zero_location('S')
+    temp = np.max(np.append(dir_component, row['bar_ds_index']))
+    ax_polar.plot((0, np.pi), (temp * 1.2, temp * 1.2), color='gray')
+    ax_polar.plot((np.pi / 2, np.pi / 2 * 3), (temp * 1.2, temp * 1.2), color='gray')
+    ax_polar.plot([0, row['bar_pref_dir']], [0, row['bar_ds_index'] * np.sum(dir_component)], color='r')
+    ax_polar.plot(np.append(sorted_directions, sorted_directions[0]),
+                  np.append(dir_component, dir_component[0]), color='k')
+    ax_polar.set_rmin(0)
+    ax_polar.set_thetalim([0, 2 * np.pi])
+    ax_polar.set_yticks([])
+
+    fig.suptitle(
+        f"DSI: {row['bar_ds_index']:.2f}, "
+        f"Pref-Dir: {(360 + np.rad2deg(row['bar_pref_dir'])) % 360:.0f}°; p={row['bar_ds_pvalue']:.2f}\n"
+        f"OSI: {row['bar_os_index']:.2f}, "
+        f"Pref-Or: {(180 + np.rad2deg(row['bar_pref_or'])) % 180:.0f}°; p={row['bar_os_pvalue']:.2f}"
+    )
+
+    return axs, ax_polar
+
+
+def plot_ds_on_morph(row, rotation_deg=150, figsize=(10, 5), rad=200):
+    """Plot a cell's morphology next to its moving-bar DS/OS response summary.
+
+    Args:
+        row: DataFrame row with a ``'skel'`` entry plus the moving-bar columns
+            required by :func:`plot_bar_dir_grid`.
+        rotation_deg: Counterclockwise rotation (degrees) applied to the
+            skeleton about its soma before plotting, e.g. to align the cell's
+            morphology with the retinal/bar-direction reference frame.
+        figsize: Figure size passed to ``plt.figure``.
+        rad: Half-width in µm of the morphology axis limits around the soma.
+
+    Returns:
+        matplotlib.figure.Figure: The combined figure.
+    """
+    fig = plt.figure(figsize=figsize, facecolor='w')
+    gs = fig.add_gridspec(1, 2, width_ratios=(1, 1.2))
+
+    ax_morph = fig.add_subplot(gs[0, 0])
+    plot_morph(ax=ax_morph, row=row, rad=rad, rotation_deg=rotation_deg)
+
+    plot_bar_dir_grid(fig, gs[0, 1], row)
+
+    plt.tight_layout()
+    return fig
+
+
 def plot_bar_block(ax, row, i, show_symbol=True, ventral_up=False):
     """
     Plot ONE direction block (index i: 0..7) on the given Cartesian axes.
@@ -238,21 +352,26 @@ def draw_scale_bar(ax, length_data, label="2 mm",
     return line
 
 
-def plot_morph(ax, row, rad=200):
+def plot_morph(ax, row, rotation_deg=150, rad=150):
     """Plot an XY morphology projection of a skeleton centred on its soma.
 
     Args:
         ax: Matplotlib Axes to plot on.
         row: DataFrame row with a ``skel`` attribute (a ``skeliner.Skeleton``).
+        rotation_deg: Rotation angle in degrees.
         rad: Half-width of the axis limits in µm around the soma centre.
 
     Returns:
         tuple: ``(sx, sy, sz)`` – soma centre coordinates in µm.
     """
-    sk.plot.projection(row.skel, ax=ax, plane='xy')  # , color_by="ntype", skel_cmap='Grays')
-    sx, sy, sz = row.skel.soma.center
-    ax.set_xlim(sx - rad, sx + rad)
-    ax.set_ylim(sy + rad, sy - rad)
+    skel = row.skel
+    if rotation_deg != 0:
+        skel = rotate_skel(skel, rotation_deg=rotation_deg)
+
+    sk.plot.projection(skel, ax=ax, plane='yx')  # , color_by="ntype", skel_cmap='Grays')
+    sx, sy, sz = skel.soma.center
+    ax.set_xlim(sy - rad, sy + rad)
+    ax.set_ylim(sx + rad, sx - rad)
     return sx, sy, sz
 
 

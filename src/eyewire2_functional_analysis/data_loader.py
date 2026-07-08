@@ -11,6 +11,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_ROOT = os.path.join(HERE, "..", "..", "data")
 DATA_2P = os.path.join(DATA_ROOT, "data-2p")
 DATA_SS = os.path.join(DATA_ROOT, "spreadsheets")
+DATA_SWC = os.path.join(DATA_ROOT, "swc")
 
 MAIN_ALL_CELLS_SHEET = "Eyewire II Proofread Cells Main List - All Cells 2026-07-03.csv"
 MAP_SHEET = "Eyewire II Proofread Cells Main List - EM-2p-mapping 2026-07-08e v2-final.csv"
@@ -194,3 +195,18 @@ def load_df_rois_morph(
     df_merged['Latest SegID'] = latest
 
     return df_merged
+
+
+
+def add_skels(df: pd.DataFrame, swc_dir: str | Path | None = DATA_SWC, inplace: bool = False) -> pd.DataFrame:
+    import skeliner as sk
+
+    if not inplace:
+        df = df.copy()
+
+    df['swc_path'] = ''
+    df['skel'] = None
+
+    df['swc_path'] = df['Latest SegID'].apply(lambda x: os.path.join(swc_dir, f"{x}.swc"))
+    df['skel'] = df.apply(lambda row: sk.io.load_swc(row['swc_path']) if os.path.isfile(row['swc_path']) else None, axis=1)
+    return df

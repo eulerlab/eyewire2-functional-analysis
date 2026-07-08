@@ -1,3 +1,7 @@
+# Download
+
+Download the stimulus data from the [eyewire2-data Hugging Face dataset](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/stimuli).
+
 # Stimulus description
 In Eyewire2 stimuli were chirp, moving bar (MB) and mouse camera movies (MCs).
 

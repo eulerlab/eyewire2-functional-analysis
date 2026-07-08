@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 # Files
+data-2p
 data/stimuli
 *.pickle
 *.pkl

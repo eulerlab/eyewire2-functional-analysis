@@ -165,6 +165,74 @@ def spawn_field_mapping_link(client, df_map, df_estimates, colormap='tab10',
     return f'{link_template}{new_id}'
 
 
+def spawn_example_cells_link(client, example_cells, df_map, colormap='tab10',
+                              state_id=4697418519019520, annotation_layer_idx=2):
+    """
+    Build a Neuroglancer link with one segmentation layer per example cell
+    (so its full EM reconstruction, e.g. an axon, can be traced), plus, per
+    2p field, a point-annotation layer marking every matched EM cell's real
+    "Nuc Coords" (colored by field, as in `spawn_field_mapping_link`) -- so
+    an example cell's true EM position can be checked against its field's
+    full matched-cell point cloud.
+
+    Parameters
+    ----------
+    client : CAVEclient
+        Client used to fetch/upload the Neuroglancer state.
+    example_cells : dict
+        Maps a label (used as the layer name, e.g. "GCL0: RGC") to that
+        cell's `("Latest NucID", "Latest SegID")` -- both are shown in the
+        cell's segmentation layer, since "Latest NucID" (the nucleus
+        detection) can lag behind "Latest SegID" (the up-to-date root ID
+        covering the cell's full current proofread extent, e.g. after its
+        axon was traced further).
+    df_map : pd.DataFrame
+        Must have '2p-Field', '2p-ROI', 'Nuc Coords' columns (as in the
+        EM-2p mapping CSV).
+    colormap : str
+        Matplotlib colormap name used to assign one color per field.
+    state_id : int
+        Neuroglancer state to use as a template (cloned, not modified in
+        place). Must have a segmentation layer at index 1 and an empty
+        annotation layer at `annotation_layer_idx`.
+    annotation_layer_idx : int
+        Index of the empty annotation layer to clone for the per-field
+        point-annotation layers.
+
+    Returns
+    -------
+    str
+        The new Neuroglancer link.
+    """
+    data_template = client.state.get_state_json(state_id)
+
+    example_cmap = plt.get_cmap('Set1')
+    for i, (label, (nuc_id, seg_id)) in enumerate(example_cells.items()):
+        color = example_cmap(i / max(1, len(example_cells) - 1))
+        ids = sorted({str(int(nuc_id)), str(int(seg_id))})
+        add_layer(ids, f'example: {label}', colormap, data_template, visible=True, flat_color=color)
+
+    df_valid = df_map[df_map['Nuc Coords'].notna()]
+    fields = sorted(df_valid['2p-Field'].unique())
+    field_cmap = plt.get_cmap(colormap)
+
+    for i, field in enumerate(fields):
+        color = field_cmap(i / max(1, len(fields) - 1))
+        df_field = df_valid[df_valid['2p-Field'] == field]
+        point_annotations = [
+            point_annotation(_parse_coord(coord), description=f'2p-ROI {roi_id}')
+            for coord, roi_id in zip(df_field['Nuc Coords'], df_field['2p-ROI'])
+        ]
+        add_annotation_layer(
+            point_annotations, f'{field} matched cells', color, data_template, visible=True,
+            annotation_layer_idx=annotation_layer_idx,
+        )
+
+    link_template = "https://spelunker.cave-explorer.org/#!middleauth+https://global.daf-apis.com/nglstate/api/v1/"
+    new_id = client.state.upload_state_json(data_template)
+    return f'{link_template}{new_id}'
+
+
 def spawn_link(client, ids, names, colors, visibles, hidden_ids=None,
                state_id=6631492699553792):
     # https://spelunker.cave-explorer.org/#!middleauth+https://global.daf-apis.com/nglstate/api/v1/6631492699553792

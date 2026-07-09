@@ -38,6 +38,7 @@ import seaborn as sns
 from caveclient import CAVEclient
 
 from eyewire2_functional_analysis import data_loader, neuroglancer, registration
+from eyewire2_functional_analysis.space_mapping import fit_z_plane, map_coords_per_row, predict_z_plane
 
 # %%
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -63,19 +64,6 @@ MIN_MATCHED_PER_FIELD = 3
 
 
 # %%
-def map_coords_per_row(coords, fields, reg, direction):
-    """Apply `registration.map_coords` to `coords`, grouped by `fields` (so each
-    row gets its own field's per-field refinement, falling back to the global
-    fit -- with a warning -- for fields that have none)."""
-    coords = np.asarray(coords, dtype=np.float64)
-    fields = np.asarray(fields)
-    out = np.empty_like(coords)
-    for field in np.unique(fields):
-        mask = fields == field
-        out[mask] = registration.map_coords(coords[mask], reg, direction=direction, field=field)
-    return out
-
-
 def savefig(name):
     path = os.path.join(FIG_DIR, name)
     plt.savefig(path, dpi=150)
@@ -332,19 +320,6 @@ savefig("08_global_vs_per_field_matched_pairs.pdf")
 # to go find the still-unmatched cells.
 
 # %%
-def fit_z_plane(xy, z):
-    """Fit z ~= a*x + b*y + c by least squares; returns coefficients [a, b, c]."""
-    design = np.column_stack([xy, np.ones(len(xy))])
-    coef, *_ = np.linalg.lstsq(design, z, rcond=None)
-    return coef
-
-
-def predict_z_plane(xy, coef):
-    design = np.column_stack([xy, np.ones(len(xy))])
-    return design @ coef
-
-
-# %%
 df_out = df_rois[['field', 'roi_id', 'roi_rotx_final_um', 'roi_roty_final_um']].copy()
 matched_keys = set(zip(df_matched['field'], df_matched['roi_id']))
 not_a_cell_keys = set(zip(
@@ -403,3 +378,42 @@ link_path = os.path.join(HERE, LINK_FILE)
 with open(link_path, "w") as f:
     f.write(link + "\n")
 print(f"wrote {link_path}")
+
+# %% [markdown]
+# ## EM -> 2p (inverse direction)
+#
+# `fit_registration` fits `2p_to_em` and `em_to_2p` independently by least
+# squares (see `registration._fit_direction`), rather than algebraically
+# inverting one to get the other. So `reg['directions']['em_to_2p']` is
+# already a directly-fit global + per-field mapping for this direction --
+# reuse it as-is (no refit) to map every EM soma with a known 2p field into
+# 2p space, for comparison against the true 2p ROI positions.
+
+# %%
+g_em_to_2p = reg['directions']['em_to_2p']['global']
+print(f"EM->2p global: angle = {g_em_to_2p['angle_deg']:.2f} deg, scale = {g_em_to_2p['scale']:.3f}, "
+      f"RMSE = {g_em_to_2p['rmse_um']:.2f} um (n={g_em_to_2p['n_matched']})")
+
+matched_2p_from_em = map_coords_per_row(matched_em, matched_fields, reg, direction='em_to_2p')
+rmse_em_to_2p = np.sqrt(np.mean(np.sum((matched_2p_from_em - matched_2p) ** 2, axis=1)))
+print(f"EM->2p RMSE on matched cells (global + per-field): {rmse_em_to_2p:.2f} um")
+
+has_em_coords = df_map['em_x_um'].notna()
+df_map_valid = df_map[has_em_coords]
+mapped_em_to_2p = map_coords_per_row(
+    df_map_valid[['em_x_um', 'em_y_um']].to_numpy(),
+    df_map_valid['2p-Field'].to_numpy(),
+    reg, direction='em_to_2p',
+)
+df_map['em_rotx_2p_um'] = np.nan
+df_map['em_roty_2p_um'] = np.nan
+df_map.loc[has_em_coords, ['em_rotx_2p_um', 'em_roty_2p_um']] = mapped_em_to_2p
+
+# %%
+fig, axs = plt.subplots(1, 2, figsize=(10, 5), subplot_kw={"aspect": "equal"})
+sns.scatterplot(data=df_rois, x='temporal_nasal_pos_um', y='ventral_dorsal_pos_um', hue='field', alpha=0.5, ax=axs[0])
+axs[0].set_title('2p coordinates (reference)')
+sns.scatterplot(data=df_map[has_em_coords], x='em_rotx_2p_um', y='em_roty_2p_um', hue='2p-Field', alpha=0.5, ax=axs[1])
+axs[1].set_title(f'EM coordinates, mapped to 2p space\n(global + per-field, EM->2p fit)\nmatched-cell RMSE={rmse_em_to_2p:.1f} um')
+plt.tight_layout()
+savefig("09_em_to_2p_alignment_overview.pdf")

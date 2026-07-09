@@ -84,9 +84,11 @@ def plot_cells(df, reg):
         skel_rot.nodes -= skel_rot.soma.center
 
         sk.plot.projection(skel_rot,
-                           ax=ax, xlim=global_ylim, ylim=global_xlim, plane='yx', draw_cylinders=False)
-        plot.plot_scale_bar(ax=ax, x0=global_ylim[0] + 5, y0=np.mean(global_xlim),
+                           ax=ax, xlim=global_xlim, ylim=global_ylim, plane='xy', draw_cylinders=False)
+        plot.plot_scale_bar(ax=ax, x0=global_xlim[0] + 5, y0=np.mean(global_ylim),
                             size=100, text=False, unit='µm', tdist=0, orientation='v')
+        plot.plot_em_axis_indicator(ax, reg, field=row['field'], direction='em_to_2p',
+                                    center=(0, 0), lw=1, labels=('', ''))
         ax.set_rasterized(True)
 
         ax = axs[i, 1]

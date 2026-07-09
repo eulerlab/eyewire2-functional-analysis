@@ -12,9 +12,11 @@ DATA_ROOT = os.path.join(HERE, "..", "..", "data")
 DATA_2P = os.path.join(DATA_ROOT, "data-2p")
 DATA_SS = os.path.join(DATA_ROOT, "spreadsheets")
 DATA_SWC = os.path.join(DATA_ROOT, "swc")
+DATA_REGISTRATION = os.path.join(DATA_ROOT, "registration")
 
 MAIN_ALL_CELLS_SHEET = "Eyewire II Proofread Cells Main List - All Cells 2026-07-03.csv"
 MAP_SHEET = "Eyewire II Proofread Cells Main List - EM-2p-mapping 2026-07-08e v2-final.csv"
+EM_2P_REGISTRATION_FILE = "em_2p_registration.yaml"
 
 
 def load_parquet_df(filepath):

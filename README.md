@@ -11,11 +11,13 @@ The code in this repository is under MIT license. All data in the repository, as
 This repository hosts tools to analyse the functional data from OGB-1 recordings in the Eyewire II dataset.
 
 The following files are included:
-- tutorial notebooks to facilitate data exploration [notebooks/tutorial/*.ipynb](notebooks/tutorial/)
-- analysis notebooks [notebooks/analysis/*.ipynb](notebooks/analysis/)
+- tutorial scripts to facilitate data exploration [scripts/tutorial/*.py](scripts/tutorial/)
+- analysis scripts [scripts/analysis/*.py](scripts/analysis/)
+- preprocessing scripts, e.g. for the 2P-to-EM coordinate registration [scripts/preprocessing/*.py](scripts/preprocessing/)
 - spreadsheet data that are needed to map 2p to EM data (proofread cell main list, 2P-to-EM ROI mapping) in [data/spreadsheets/*](data/spreadsheets/)
 - pre-processed calcium traces from recordings over five recording fields, stored as parquet files and downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) (see [data/data-2p/README.md](data/data-2p/README.md))
 
+Scripts are plain `.py` files in [jupytext](https://jupytext.readthedocs.io/) "percent" format (`# %%` cell markers) rather than `.ipynb` notebooks — open them in Jupyter Lab to run them cell-by-cell like a notebook, or run them directly with `uv run python <script>.py`.
 
 Documentation is still incomplete:
 - a description of the 2P data can be found [here](data/data-2p/README.md).
@@ -29,7 +31,7 @@ To use the code in this repository out of the box, you can use [uv](https://docs
 
 - Install `uv`
 - Clone this repository and navigate to its root folder
-- Run `uv run jupyter lab` to start jupyter lab  - it should open in your browser, and allows you to run our notebooks.
+- Run `uv run jupyter lab` to start jupyter lab  - it should open in your browser, and allows you to run our scripts as notebooks.
 
 On the first call, `uv run` will install all dependencies into a `uv` virtual environment (placed in the `.venv` folder), which is then invoked on all further calls of `uv run`.
 
@@ -51,7 +53,9 @@ df_rois, df_fields, df_outline = data_loader.load_all_dfs(data_folder)
 
 You can also load each DataFrame individually using `load_df_rois()`, `load_df_fields()`, or `load_df_outline()`.
 
-See the tutorial notebooks for full usage examples:
-- [plot_raw_data.ipynb](notebooks/tutorial/plot_raw_data/plot_raw_data.ipynb) — load data and plot raw + preprocessed traces for individual ROIs
-- [plot_data_overview.ipynb](notebooks/tutorial/plot_data_overview/plot_data_overview.ipynb) — plot chirp and bar response overviews grouped by cell type and recording field
-- [plot_morph_and_func.ipynb](notebooks/tutorial/plot_morphology/plot_morph_and_func.ipynb) — plot morphology and functional data for individual cells
+See the tutorial scripts for full usage examples:
+- [plot_raw_data.py](scripts/tutorial/plot_raw_data/plot_raw_data.py) — load data and plot raw + preprocessed traces for individual ROIs
+- [plot_data_overview.py](scripts/tutorial/plot_data_overview/plot_data_overview.py) — plot chirp and bar response overviews grouped by cell type and recording field
+- [plot_morph_and_func.py](scripts/tutorial/plot_morphology/plot_morph_and_func.py) — plot morphology and functional data for individual cells
+- [plot_retinal_outline.py](scripts/tutorial/plot_retinal_outline/plot_retinal_outline.py) — plot the retinal outline and recording field locations
+- [plot_DS_on_morph.py](scripts/tutorial/plot_DS_on_morph/plot_DS_on_morph.py) — plot direction selectivity on cell morphology

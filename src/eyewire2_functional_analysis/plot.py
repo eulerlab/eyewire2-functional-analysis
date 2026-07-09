@@ -212,15 +212,19 @@ def plot_bar_dir_grid(fig, gs, row):
     return axs, ax_polar
 
 
-def plot_ds_on_morph(row, rotation_deg=150, figsize=(10, 5), rad=200):
+def plot_ds_on_morph(row, reg=None, rotation_deg=None, annotate_orientation=None, figsize=(10, 5), rad=200):
     """Plot a cell's morphology next to its moving-bar DS/OS response summary.
 
     Args:
         row: DataFrame row with a ``'skel'`` entry plus the moving-bar columns
             required by :func:`plot_bar_dir_grid`.
-        rotation_deg: Counterclockwise rotation (degrees) applied to the
-            skeleton about its soma before plotting, e.g. to align the cell's
-            morphology with the retinal/bar-direction reference frame.
+        reg: Optional fitted 2p<->EM registration dict, forwarded to
+            :func:`plot_morph` to rotate/flip the skeleton into the
+            2p/retinal reference frame. Takes precedence over `rotation_deg`.
+        rotation_deg: Optional manual counterclockwise rotation (degrees)
+            applied instead, when no fitted `reg` is available.
+        annotate_orientation: Forwarded to :func:`plot_morph`; defaults to
+            ``reg is not None``.
         figsize: Figure size passed to ``plt.figure``.
         rad: Half-width in µm of the morphology axis limits around the soma.
 
@@ -231,7 +235,8 @@ def plot_ds_on_morph(row, rotation_deg=150, figsize=(10, 5), rad=200):
     gs = fig.add_gridspec(1, 2, width_ratios=(1, 1.2))
 
     ax_morph = fig.add_subplot(gs[0, 0])
-    plot_morph(ax=ax_morph, row=row, rad=rad, rotation_deg=rotation_deg)
+    plot_morph(ax=ax_morph, row=row, rad=rad, reg=reg, rotation_deg=rotation_deg,
+               annotate_orientation=annotate_orientation)
 
     plot_bar_dir_grid(fig, gs[0, 1], row)
 
@@ -352,26 +357,75 @@ def draw_scale_bar(ax, length_data, label="2 mm",
     return line
 
 
-def plot_morph(ax, row, rotation_deg=150, rad=150):
+def annotate_retinal_axes(ax, fontsize=9, pad_pt=22, color='dimgray'):
+    """Label the 4 edges of a `plot_morph` axes with the retinal directions.
+
+    Only correct for a `plot_morph` axes whose skeleton was rotated into the
+    2p/retinal reference frame via a fitted em_to_2p registration (i.e.
+    ``plot_morph(..., reg=...)``). `plot_morph` plots with ``plane='yx'`` and
+    an inverted y-axis; combined with 'ventral_dorsal_pos_um' increasing
+    dorsally and 'temporal_nasal_pos_um' increasing nasally (see
+    ``data/stimuli/README.md``), the screen edges work out to
+    right=dorsal, left=ventral, top=temporal, bottom=nasal.
+
+    Args:
+        ax: A `plot_morph` Axes.
+        fontsize: Label font size.
+        pad_pt: Distance from the axes edge to each label, in points (a fixed
+            point offset clears the tick labels regardless of axes size,
+            unlike an axes-fraction pad).
+        color: Label colour.
+    """
+    kwargs = dict(xycoords='axes fraction', textcoords='offset points',
+                  fontsize=fontsize, color=color, clip_on=False, annotation_clip=False)
+    ax.annotate('Dorsal', xy=(1, 0.5), xytext=(pad_pt, 0), ha='left', va='center', **kwargs)
+    ax.annotate('Ventral', xy=(0, 0.5), xytext=(-pad_pt, 0), ha='right', va='center', **kwargs)
+    ax.annotate('Temporal', xy=(0.5, 1), xytext=(0, pad_pt), ha='center', va='bottom', **kwargs)
+    ax.annotate('Nasal', xy=(0.5, 0), xytext=(0, -pad_pt), ha='center', va='top', **kwargs)
+
+
+def plot_morph(ax, row, rad=150, reg=None, rotation_deg=None, annotate_orientation=None):
     """Plot an XY morphology projection of a skeleton centred on its soma.
 
     Args:
         ax: Matplotlib Axes to plot on.
-        row: DataFrame row with a ``skel`` attribute (a ``skeliner.Skeleton``).
-        rotation_deg: Rotation angle in degrees.
+        row: DataFrame row with a ``skel`` attribute (a ``skeliner.Skeleton``)
+            and, if `reg` is given, a ``field`` column.
         rad: Half-width of the axis limits in µm around the soma centre.
+        reg: Optional fitted 2p<->EM registration dict (see
+            ``eyewire2_functional_analysis.registration``). If given, the
+            skeleton is rotated/flipped into the 2p/retinal reference frame
+            using the per-field fit for ``row['field']`` (falling back to the
+            global fit, with a warning, if that field has none). Takes
+            precedence over `rotation_deg`.
+        rotation_deg: Optional manual counterclockwise rotation (degrees)
+            applied instead, when no fitted `reg` is available. Ignored if
+            `reg` is given.
+        annotate_orientation: If ``True``, label the axes edges with
+            Dorsal/Ventral/Temporal/Nasal via :func:`annotate_retinal_axes`
+            (only correct when `reg` orients the skeleton). Defaults to
+            ``reg is not None``.
 
     Returns:
         tuple: ``(sx, sy, sz)`` – soma centre coordinates in µm.
     """
     skel = row.skel
-    if rotation_deg != 0:
+    if reg is not None:
+        from eyewire2_functional_analysis.registration import align_skel
+        skel = align_skel(skel, reg, field=row['field'], direction='em_to_2p')
+    elif rotation_deg:
         skel = rotate_skel(skel, rotation_deg=rotation_deg)
 
     sk.plot.projection(skel, ax=ax, plane='yx')  # , color_by="ntype", skel_cmap='Grays')
     sx, sy, sz = skel.soma.center
     ax.set_xlim(sy - rad, sy + rad)
     ax.set_ylim(sx + rad, sx - rad)
+
+    if annotate_orientation is None:
+        annotate_orientation = reg is not None
+    if annotate_orientation:
+        annotate_retinal_axes(ax)
+
     return sx, sy, sz
 
 

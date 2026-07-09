@@ -10,7 +10,7 @@ data/stimuli
 *.pickle
 *.pkl
 *.png
-*.pdf
+#*.pdf
 #*.svg
 
 # C extensions

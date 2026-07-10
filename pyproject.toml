@@ -1,13 +1,16 @@
 [project]
 name = "eyewire2-functional-analysis"
-version = "0.1.0"
+version = "0.2.0"
 description = "eyewire2 functional data and analysis"
 requires-python = ">=3.12"
 dependencies = [
+    "anywidget>=0.11.0",
     "caveclient>=7.0.0",
     "fastparquet>=2025.12.0",
     "h5py>=3.14.0",
+    "ipywidgets>=8.1.6",
     "jupyter>=1.1.1",
+    "jupyterlab>=4.6.1",
     "jupytext>=1.19.4",
     "matplotlib>=3.10.1",
     "notebook>=7.4.1",
@@ -23,8 +26,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pywarper>=0.2.3",
-    "skeliner>=0.1.12",
+    "pywarper>=0.2.5",
+    "skeliner>=0.2.5",
     "cell-mosaics>=0.1.0",
 ]
 

@@ -4,11 +4,11 @@ from shapely.ops import unary_union
 
 # -------------------------------------------------------------------------------
 def movingBar(
-        lEdge: int = 300, trajLen :int = 4000,
+        lEdge: float = 300, trajLen: float = 4000,
         angles: list = [0, 45, 90, 135],
-        x0: int = 0,
-        y0: int = 0,
-        FOV_diam: int = None
+        x0: float = 0,
+        y0: float = 0,
+        FOV_diam: float | None = None
     ):
     """Create a Shapely polygon representing the union of moving-bar outlines.
 
@@ -87,10 +87,10 @@ def movingBar(
 
 # -------------------------------------------------------------------------------
 def spot(
-        diam: int = 1000,
-        x0: int = 0,
-        y0: int = 0,
-        FOV_diam: int = None
+        diam: float = 1000,
+        x0: float = 0,
+        y0: float = 0,
+        FOV_diam: float | None = None
     ):
     """Create a Shapely circular polygon representing a full-field spot stimulus.
 
@@ -117,12 +117,12 @@ def spot(
 
 # -------------------------------------------------------------------------------
 def box(
-        dx: int = 1000,
-        dy: int = 1000,
+        dx: float = 1000,
+        dy: float = 1000,
         angle: float = 0,
-        x0: int = 0,
-        y0: int = 0,
-        FOV_diam: int = None
+        x0: float = 0,
+        y0: float = 0,
+        FOV_diam: float | None = None
     ):
     """Create a Shapely rectangular polygon, optionally rotated and clipped to a FOV aperture.
 

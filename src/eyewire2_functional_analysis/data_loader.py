@@ -200,15 +200,54 @@ def load_df_rois_morph(
 
 
 
-def add_skels(df: pd.DataFrame, swc_dir: str | Path | None = DATA_SWC, inplace: bool = False) -> pd.DataFrame:
-    import skeliner as sk
+class LazySkeleton:
+    """A ``skeliner.core.Skeleton`` that is only parsed from its SWC file on first use.
 
+    Attribute access (e.g. ``.nodes``, ``.soma``, ``.edges``) transparently
+    triggers the actual ``skeliner.io.load_swc`` parse on first access and
+    caches the result, so code that just reads skeleton attributes works
+    unchanged whether it got a real ``Skeleton`` or one of these.
+    """
+
+    __slots__ = ("swc_path", "_skel")
+
+    def __init__(self, swc_path: str | Path):
+        self.swc_path = swc_path
+        self._skel = None
+
+    def _load(self):
+        if self._skel is None:
+            import skeliner as sk
+            self._skel = sk.io.load_swc(self.swc_path)
+        return self._skel
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+    def __repr__(self):
+        state = "loaded" if self._skel is not None else "not loaded"
+        return f"LazySkeleton({self.swc_path!r}, {state})"
+
+
+def add_skels(df: pd.DataFrame, swc_dir: str | Path | None = DATA_SWC, inplace: bool = False) -> pd.DataFrame:
+    """Add ``swc_path``/``skel`` columns, deferring the actual SWC parse until first use.
+
+    ``skel`` holds a :class:`LazySkeleton` per row (or ``None`` if no SWC file
+    exists for that row's ``Latest SegID``) rather than an eagerly-loaded
+    ``skeliner.core.Skeleton`` -- parsing hundreds of SWC files up front is
+    slow and often wasted when only a handful of rows end up being inspected.
+
+    Args:
+        df: DataFrame with a ``Latest SegID`` column.
+        swc_dir: Directory containing ``{Latest SegID}.swc`` files.
+        inplace: If ``False`` (default), operate on a copy of `df`.
+
+    Returns:
+        pandas.DataFrame: `df` with ``swc_path`` and ``skel`` columns added.
+    """
     if not inplace:
         df = df.copy()
 
-    df['swc_path'] = ''
-    df['skel'] = None
-
     df['swc_path'] = df['Latest SegID'].apply(lambda x: os.path.join(swc_dir, f"{x}.swc"))
-    df['skel'] = df.apply(lambda row: sk.io.load_swc(row['swc_path']) if os.path.isfile(row['swc_path']) else None, axis=1)
+    df['skel'] = [LazySkeleton(p) if os.path.isfile(p) else None for p in df['swc_path']]
     return df

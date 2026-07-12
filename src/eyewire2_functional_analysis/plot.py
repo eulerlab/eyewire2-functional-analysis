@@ -3,7 +3,7 @@ import skeliner as sk
 from matplotlib import pyplot as plt
 from matplotlib import patches as patches
 
-from eyewire2_functional_analysis import registration
+from eyewire2_functional_analysis import plot_traces, registration
 from eyewire2_functional_analysis.skeleton import rotate_skel
 
 MB_DIRS              = (0,  180,   45,  225,  90, 270, 135, 315)
@@ -39,16 +39,16 @@ def plot_chirp(ax, row, stimulus_ms=None, plot_hline=True, plot_vlines=False, lw
         plot_vlines: If ``True``, draw dashed vertical lines at t=2, 5, 8, 30 s.
     """
     snippets = row['chirp_snippets']
-    for i, trace in enumerate(snippets.T):
-        ax.plot(np.arange(0, len(trace)) * row['chirp_snippets_dt'], trace / np.max(np.abs(trace)), color='dimgray',
-                alpha=0.5, clip_on=False, lw=lw)
-    ax.plot(np.arange(0, len(row['chirp_average_norm'])) * row['chirp_average_dt'], row['chirp_average_norm'],
-            color='black', clip_on=False, lw=lw)
-    if plot_hline:
-        ax.axhline(0, c='dimgray', ls='--')
-    if plot_vlines:
-        for t in [2, 5, 8, 30]:
-            ax.axvline(t, c='dimgray', ls='--')
+    time = np.arange(snippets.shape[0]) * row['chirp_snippets_dt']
+    norm_snippets = snippets / np.max(np.abs(snippets), axis=0, keepdims=True)
+    average = row['chirp_average_norm']
+    average_time = np.arange(len(average)) * row['chirp_average_dt']
+
+    plot_traces.plot_snippets_and_average(
+        ax, time, norm_snippets, average=average, average_time=average_time,
+        hline=plot_hline, vlines=[2, 5, 8, 30] if plot_vlines else None,
+        snippet_lw=lw, average_lw=lw,
+    )
     if stimulus_ms is not None:
         y0 = np.max(row['chirp_average_norm'])
         yrng = np.max(row['chirp_average_norm']) - np.min(row['chirp_average_norm'])
@@ -57,11 +57,11 @@ def plot_chirp(ax, row, stimulus_ms=None, plot_hline=True, plot_vlines=False, lw
                 c='k', clip_on=False, lw=1, solid_capstyle='butt')
 
 
-def plot_bar(ax, row, annotate_dirs=False, annotate_symbols=False, ventral_up=True, lw=1):
+def plot_bar(ax, row, annotate_dirs=False, annotate_symbols=False, ventral_up=False, lw=1):
     """Plot moving-bar response snippets for all 8 directions in a single axes.
 
     Snippets are grouped by direction and plotted consecutively along the time axis.
-    Individual repetitions are shown in gray; the per-direction mean is plotted in black.
+    Individual repetitions are colour-coded by repeat; the per-direction mean is plotted in black.
 
     Args:
         ax: Matplotlib Axes to plot on.
@@ -76,14 +76,11 @@ def plot_bar(ax, row, annotate_dirs=False, annotate_symbols=False, ventral_up=Tr
         mb_symbols = MB_DIRS_SYMBOLS_V_UP
     else:
         mb_symbols = MB_DIRS_SYMBOLS_D_UP
-    
+
     for i, (dir_deg, symbol) in enumerate(zip(MB_DIRS, mb_symbols)):
-        snippets = row['bar_snippets'][:, np.array([0, 8, 16]) + i]
+        snippets = row['bar_snippets'][:, np.array([0, 8, 16]) + i] / vmax
         time = (np.arange(0, snippets.shape[0]) + (snippets.shape[0] * 1.2 * i)) * row['bar_snippets_dt']
-        for trace in snippets.T:
-            ax.plot(time, trace / vmax, color='dimgray', alpha=0.5, clip_on=False, lw=lw)
-        ax.plot(time, np.mean(snippets, axis=1) / vmax, color='black', clip_on=False, lw=lw)
-        ax.axhline(0, c='dimgray', ls='--')
+        plot_traces.plot_snippets_and_average(ax, time, snippets, hline=True, snippet_lw=lw, average_lw=lw)
         if annotate_dirs or annotate_symbols:
             x = time[0] + 0.5 * (time[-1] - time[0])
             y = 1.15
@@ -100,7 +97,7 @@ def plot_bar(ax, row, annotate_dirs=False, annotate_symbols=False, ventral_up=Tr
                 )
 
 
-def plot_bar_dir(ax, row, ventral_up=True, lw=1):
+def plot_bar_dir(ax, row, ventral_up=False, lw=1):
     """Plot the directional tuning curve (polar plot) derived from moving-bar snippets.
 
     Performs SVD-based decomposition to extract the direction component and renders
@@ -145,7 +142,7 @@ def plot_bar_dir(ax, row, ventral_up=True, lw=1):
 
 
 def plot_bar_dir_grid(fig, gs, row):
-    """Plot per-direction moving-bar averages plus a polar tuning plot in a 3x3 grid.
+    """Plot per-direction moving-bar repeats/averages plus a polar tuning plot in a 3x3 grid.
 
     Reproduces the DS/OS summary layout of the original DataJoint ``plot1``
     method: the 8 moving-bar directions are arranged around a compass (sorted
@@ -166,7 +163,7 @@ def plot_bar_dir_grid(fig, gs, row):
     """
     sub_gs = gs.subgridspec(3, 3) if hasattr(gs, "subgridspec") else gs
 
-    sorted_directions, _, avg_sorted_resp = preprocess_mb_snippets(row['bar_snippets'])
+    sorted_directions, sorted_responses, avg_sorted_resp = preprocess_mb_snippets(row['bar_snippets'])
     dt = row['bar_snippets_dt']
     # Recompute dir_component from the raw snippets rather than using the stored
     # 'bar_dir_component' column, which is min-max normalized (min forced to 0,
@@ -177,19 +174,24 @@ def plot_bar_dir_grid(fig, gs, row):
     _, dir_component = get_time_dir_kernels(avg_sorted_resp, dt=dt)
     dir_component = np.clip(dir_component, 0, None)
 
-    ymin, ymax = np.min(avg_sorted_resp), np.max(avg_sorted_resp)
+    # Range across individual repeats (not just the average), since those are
+    # now drawn too and can have larger excursions than their mean.
+    ymin, ymax = np.min(sorted_responses), np.max(sorted_responses)
 
     axs = {}
     for r, c, dir_idx in DIR_GRID_LAYOUT:
         ax = fig.add_subplot(sub_gs[r, c])
         axs[(r, c)] = ax
-        trace = avg_sorted_resp[:, dir_idx]
-        ax.fill_between(np.arange(trace.size) * dt, trace, color='red', alpha=0.5)
-        for t in BAR_STIM_TIMES:
-            ax.axvline(t, color='gray', linestyle='--')
+        time = np.arange(avg_sorted_resp.shape[0]) * dt
+        plot_traces.plot_snippets_and_average(
+            ax, time, sorted_responses[:, dir_idx, :], average=avg_sorted_resp[:, dir_idx],
+            vlines=BAR_STIM_TIMES,
+        )
         ax.set_ylim(ymin, ymax)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
 
     ax_polar = fig.add_subplot(sub_gs[1, 1], projection='polar', frameon=False)
     # Match the surrounding grid: 0 deg at the top, going clockwise from there
@@ -454,14 +456,18 @@ def plot_em_axis_indicator(ax, reg, field=None, direction='em_to_2p', center=Non
     return x_end, y_end
 
 
-def plot_morph(ax, row, rad=150, reg=None, rotation_deg=None, annotate_orientation=None, show_em_axes=None):
+def plot_morph(ax, row, rad: float | None = 150, reg=None, rotation_deg=None, annotate_orientation=None,
+               show_em_axes=None, min_rad: float | None = None, margin=10, scale_bar_um: float | None = None):
     """Plot an XY morphology projection of a skeleton centred on its soma.
 
     Args:
         ax: Matplotlib Axes to plot on.
         row: DataFrame row with a ``skel`` attribute (a ``skeliner.Skeleton``)
             and, if `reg` is given, a ``field`` column.
-        rad: Half-width of the axis limits in µm around the soma centre.
+        rad: Half-width of the axis limits in µm around the soma centre. If
+            ``None``, auto-fit instead to the skeleton's own extent (its
+            furthest non-axon node from the soma, plus `margin`), clamped to
+            at least `min_rad` if given.
         reg: Optional fitted 2p<->EM registration dict (see
             ``eyewire2_functional_analysis.registration``). If given, the
             skeleton is rotated/flipped into the 2p/retinal reference frame
@@ -479,6 +485,12 @@ def plot_morph(ax, row, rad=150, reg=None, rotation_deg=None, annotate_orientati
             :func:`plot_em_axis_indicator`), autofit to `rad`, centred on the
             soma. Only meaningful when `reg` orients the skeleton. Defaults
             to ``reg is not None``.
+        min_rad: When `rad` is ``None``, the minimum half-width to use even if
+            the skeleton itself is smaller.
+        margin: When `rad` is ``None``, extra half-width (µm) added around the
+            skeleton's own extent.
+        scale_bar_um: If given, draw a scale bar of this length (µm) near the
+            bottom-left corner of the view, via :func:`plot_scale_bar`.
 
     Returns:
         tuple: ``(sx, sy, sz)`` – soma centre coordinates in µm.
@@ -492,6 +504,17 @@ def plot_morph(ax, row, rad=150, reg=None, rotation_deg=None, annotate_orientati
 
     sk.plot.projection(skel, ax=ax, plane='xy')  # , color_by="ntype", skel_cmap='Grays')
     sx, sy, sz = skel.soma.center
+
+    if rad is None:
+        pts = skel.nodes[:, :2]
+        if skel.ntype is not None:
+            non_axon = skel.ntype != 2
+            if non_axon.any():
+                pts = pts[non_axon]
+        rad = np.max(np.abs(pts - [sx, sy])) + margin
+        if min_rad is not None:
+            rad = max(rad, min_rad)
+
     ax.set_xlim(sx - rad, sx + rad)
     ax.set_ylim(sy - rad, sy + rad)
 
@@ -504,6 +527,10 @@ def plot_morph(ax, row, rad=150, reg=None, rotation_deg=None, annotate_orientati
         show_em_axes = reg is not None
     if show_em_axes:
         plot_em_axis_indicator(ax, reg, field=row['field'], direction='em_to_2p')
+
+    if scale_bar_um is not None:
+        plot_scale_bar(ax=ax, x0=sx - rad + scale_bar_um / 2 + 5, y0=sy - rad + 5,
+                        size=scale_bar_um, unit='µm', text=True, fontsize=8)
 
     return sx, sy, sz
 

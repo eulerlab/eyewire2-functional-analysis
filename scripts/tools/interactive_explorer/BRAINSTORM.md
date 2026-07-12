@@ -3,11 +3,12 @@
 Goal: an interactive tool where you scrub a session timeline, pick a cell (click on
 an XY mosaic or a dropdown), and see its EM skeleton, its chirp/moving-bar functional
 responses, and how the light-exposure/stimulus history around its recording looked —
-shareable with collaborators without a local dev setup (e.g. via Colab).
+shareable with collaborators, who are expected to `git clone` the repo and run it via
+`uv run` (not a hosted public link or a browser-only/WASM build — see §5).
 
 This doc is a brainstorm, not a spec. Nothing here is committed to.
 
-**Status:** a quick, deliberately un-fancy v0 exists at `interactive_explorer.py` in this folder — dropdown + clickable-scatter cell picker, EM skeleton + chirp + moving-bar + DS-polar panel. No timeline slider or stimulus overlay yet.
+**Status:** a quick, deliberately un-fancy v0 exists at `interactive_explorer.py` in this folder — dropdown + clickable-scatter cell picker, EM skeleton + chirp + moving-bar + DS-polar panel. No timeline slider or stimulus overlay yet. Built with **Panel** (not `ipywidgets`) — see §5 for why.
 
 ## 1. What already exists in this repo (so we don't reinvent it)
 
@@ -79,17 +80,34 @@ Optional stretch ideas (not required for v1):
 - A "stimulus footprint at time *t*" function: given the parsed stimulus log/timeline, return which stimulus (if any) is on screen at *t* and at which field, then place its outline (`stim_outlines`) or rendered frame (`stim_movies`) at the right µm position — factoring out the placement/clipping math currently embedded inline in `calc_spatial_exposure` so it can be called per-frame rather than only as a whole-session accumulator.
 - If the raster-movie-frame fidelity level is wanted: a resampling step that re-renders the background image to match the current zoom/pan extent (naive "one static image" won't stay pixel-correct once you zoom), plus a plan for keeping this responsive (e.g. debounce redraws on zoom, cap raster resolution).
 
-## 5. Tech stack options (all considered against "share easily, ideally via Colab")
+## 5. Tech stack: decided on Panel
 
-| Option | Colab story | Notes |
-|---|---|---|
-| **Panel** (bokeh-based) | Renders inline in Jupyter/Colab via `pn.extension()`; can *also* be exported with `panel convert` into a **fully static, serverless WASM app** (single HTML file, hostable on GitHub Pages, no server needed at all) | Not currently a dependency. Best long-term "share a link" story. Bokeh plots are interactive (pan/zoom/click) out of the box. |
-| **Plotly `FigureWidget` + `ipywidgets`** | Renders natively in Colab notebook output; `ipywidgets` already resolves transitively (via `jupyter`/`notebook`), `plotly` already declared | Lightest lift dependency-wise. Click-to-select needs manual wiring via `on_click` callbacks. No static-export path — always needs a live kernel (Colab is fine for this). |
-| **jupyter-dash / Dash** | Can render inline in Colab via `jupyter-dash`, or standalone via a tunnel (ngrok) | More powerful callback model, but heavier, and "standalone app from Colab" needs a tunnel — extra moving part. |
-| **Streamlit** | Doesn't run natively inside a Colab *cell*; realistic sharing path is deploying to Streamlit Community Cloud (separate from "open in Colab") | Great DX, but doesn't match the "share via Colab" ask directly. |
-| **marimo** | Different notebook paradigm (reactive, not jupytext); has a WASM export → fully static shareable link, no server | Interesting if we're open to stepping outside the jupytext-percent-script convention this repo already uses everywhere else. Probably a bigger convention break than warranted here. |
+The v0 was first built with `ipywidgets` + a Plotly `FigureWidget`, rendered
+inline in JupyterLab. That hit a persistent, carefully-narrowed-down (not a
+version mismatch, not a labextension conflict) JupyterLab bug --
+`Failed to load model class 'VBoxModel' from module '@jupyter-widgets/controls'`
+-- that a hard browser refresh and full server/kernel restart didn't fix.
+Since `ipywidgets`-in-Jupyter is also a poor fit for letting other people run
+this (it needs a matching JupyterLab+ipywidgets+frontend-extension install
+on their end -- exactly the class of bug just hit), the tool was rewritten
+on **Panel** instead, which doesn't use the `@jupyter-widgets` comm/JS
+bridge at all (it has its own rendering path via Bokeh), sidestepping the bug
+entirely.
 
-**Leaning recommendation:** Panel — reuses the already-declared `plotly`/matplotlib pieces, embeds fine in a notebook for local/Colab use during development, and has a real path to a static, serverless shareable build later if that becomes a goal. Plotly+ipywidgets is the fallback if we want to minimize new dependencies for a first cut.
+Deployment target was also clarified: the user is fine with people
+`git clone`-ing the repo and running it via `uv run`, same as every other
+script here -- not a hosted public link, and not a browser-only/WASM build
+(considered and ruled out: this app depends on `skeliner`, `shapely`, and
+`fastparquet`, which are unlikely to have working Pyodide/WASM builds, so a
+true zero-server export isn't realistic for this stack anyway).
+
+| Option | Notes |
+|---|---|
+| **Panel** (bokeh-based) -- **chosen** | Own rendering path (not the ipywidgets/`@jupyter-widgets` bridge), so it avoids the bug above. Same script opens in Jupyter for cell-by-cell dev *and* runs standalone via `uv run panel serve <script> --show` (plain browser tab, no Jupyter needed by the person running it). Reuses `plot.py`'s matplotlib functions unchanged via `pn.pane.Matplotlib`; the cell-picker scatter is still a Plotly figure, shown via `pn.pane.Plotly` (click events synced through Panel, not ipywidgets). |
+| **Plotly `FigureWidget` + `ipywidgets`** (the v0 approach) | Ruled out after hitting the JupyterLab widget-loading bug above, and a poor fit for "others can run this" regardless (needs a working ipywidgets+JupyterLab install on their end). |
+| **jupyter-dash / Dash** | More powerful callback model, but heavier; no particular advantage over Panel for a clone-and-`uv run` target. |
+| **Streamlit** | Simplest "push it, get a public link" story via Streamlit Community Cloud, but that's not the deployment target here. Also a bigger departure from this repo's jupytext-percent-script convention (whole-script rerun per interaction) than Panel, which keeps the same convention. |
+| **marimo** | Different notebook paradigm (reactive, not jupytext) -- a bigger convention break than warranted here. |
 
 ## 6. Data packaging for a shareable demo
 
@@ -100,7 +118,6 @@ Optional stretch ideas (not required for v1):
 ## 7. Open questions
 
 - Is an embedded 3D EM skeleton view a hard requirement for v1, or is the existing 2D XY projection (`plot.plot_morph`, used in the v0 script) enough to start?
-- Preferred sharing mechanism: a notebook people open and run themselves in Colab, a hosted static app link (Panel WASM export), or both?
 - Is this meant to become a real feature of `src/eyewire2_functional_analysis/` (reusable, tested-ish), or a self-contained demo script/notebook under `scripts/` (where the v0 currently lives)?
 - For the stimulus background overlay: is a vector outline (fast, always zoom-correct, but schematic) good enough, or is showing the actual stimulus movie raster (higher fidelity, heavier, needs the movie pickle files) worth the extra cost?
 - Should the overlay default to "what's on screen live at time *t*" (a single instant), "accumulated exposure up to *t*" (a heatmap of history), or a toggle between both?

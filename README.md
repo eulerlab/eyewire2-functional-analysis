@@ -69,3 +69,11 @@ See the tutorial scripts for full usage examples:
 - or opened cell-by-cell in Jupyter/VS Code, like the other scripts in this repo.
 
 In addition to `data/data-2p/`, this tool needs the EM skeletons (`data/swc/`) and the master spreadsheets (`data/spreadsheets/`) to link 2P ROIs to their EM reconstructions.
+
+### 2P ↔ EM coordinate registration
+
+[scripts/preprocessing/em-2p-mapping.py](scripts/preprocessing/em-2p-mapping.py) fits the rotation + isotropic scale (a global fit, plus a per-field refinement) that maps 2P ROI coordinates onto EM soma coordinates, using the known EM-cell ↔ 2P-ROI correspondences in the EM-2P mapping spreadsheet — fit independently in both directions (`2p_to_em` and `em_to_2p`), rather than guessing an angle or algebraically inverting one fit to get the other.
+
+The fitted registration is what most other scripts/tools in this repo (`plot_DS_on_morph.py`, `plot_retinal_outline.py`, the interactive explorer, ...) load via `registration.load_registration(...)` to rotate EM skeletons into the 2P/retinal reference frame. It's already committed at `data/registration/em_2p_registration.yaml`, so you don't need to run this script yourself unless you want to re-fit it (e.g. after the spreadsheets are updated) or inspect the fit diagnostics, saved as figures under `scripts/preprocessing/figures/`. Set `REFIT = True` in the script to force a re-fit even if the file already exists.
+
+It also writes `2p_roi_estimated_em_coordinates.csv` (an estimated EM-space coordinate for every 2P ROI, including still-unmatched ones) and a Neuroglancer link to help locate those unmatched cells.

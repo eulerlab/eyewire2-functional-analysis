@@ -12,6 +12,7 @@ This repository hosts tools to analyse the functional data from OGB-1 recordings
 
 The following files are included:
 - tutorial scripts to facilitate data exploration [scripts/tutorial/*.py](scripts/tutorial/)
+- an interactive EM ↔ function explorer tool [scripts/tools/interactive_explorer/](scripts/tools/interactive_explorer/)
 - analysis scripts [scripts/analysis/*.py](scripts/analysis/)
 - preprocessing scripts, e.g. for the 2P-to-EM coordinate registration [scripts/preprocessing/*.py](scripts/preprocessing/)
 - spreadsheet data that are needed to map 2p to EM data (proofread cell main list, 2P-to-EM ROI mapping) in [data/spreadsheets/*](data/spreadsheets/)
@@ -59,3 +60,12 @@ See the tutorial scripts for full usage examples:
 - [plot_morph_and_func.py](scripts/tutorial/plot_morphology/plot_morph_and_func.py) — plot morphology and functional data for individual cells
 - [plot_retinal_outline.py](scripts/tutorial/plot_retinal_outline/plot_retinal_outline.py) — plot the retinal outline and recording field locations
 - [plot_DS_on_morph.py](scripts/tutorial/plot_DS_on_morph/plot_DS_on_morph.py) — plot direction selectivity on cell morphology
+- [plot_stimulus_overlay.py](scripts/tutorial/plot_stimulus_overlay/plot_stimulus_overlay.py) — for each recording field and stimulus type (chirp, moving bar, mouse cam), draw that field's stimulus footprint over the retinal outline and ROI positions, at its true recorded position and physical scale
+
+### Interactive explorer
+
+[scripts/tools/interactive_explorer/interactive_explorer.py](scripts/tools/interactive_explorer/interactive_explorer.py) lets you pick a 2P ROI — via the field/ROI dropdowns, or by clicking a point in the retinal-position scatter — and see its EM skeleton next to its chirp, moving-bar, and mouse-cam responses. Built with [Panel](https://panel.holoviz.org/); run it either:
+- as a standalone app, no Jupyter needed: `uv run panel serve scripts/tools/interactive_explorer/interactive_explorer.py --show`
+- or opened cell-by-cell in Jupyter/VS Code, like the other scripts in this repo.
+
+In addition to `data/data-2p/`, this tool needs the EM skeletons (`data/swc/`) and the master spreadsheets (`data/spreadsheets/`) to link 2P ROIs to their EM reconstructions.

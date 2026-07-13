@@ -1,6 +1,9 @@
 import numpy as np
 
-from eyewire2_functional_analysis.plot_traces import MB_DIRS
+# Moving bar directions
+MB_DIRS = (0,  180,   45,  225,  90, 270, 135, 315)
+MB_DIRS_SYMBOLS_V_UP = ('↓', '↑', '↙', '↗', '←', '→', '↖', '↘')
+MB_DIRS_SYMBOLS_D_UP = ('↑', '↓', '↗', '↙', '→', '←', '↘', '↖')
 
 
 def get_dir_idx(snippets, dir_order=MB_DIRS):

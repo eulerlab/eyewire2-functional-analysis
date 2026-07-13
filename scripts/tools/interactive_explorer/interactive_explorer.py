@@ -34,10 +34,6 @@
 #   `uv run panel serve scripts/tools/interactive_explorer/interactive_explorer.py --show`
 
 # %%
-# %load_ext autoreload
-# %autoreload 2
-
-# %%
 import os
 
 import matplotlib.pyplot as plt
@@ -47,6 +43,7 @@ import plotly.graph_objects as go
 
 from eyewire2_functional_analysis import data_loader, plot_morph, plot_traces, registration
 from eyewire2_functional_analysis.space_mapping import align_and_place_skel
+from eyewire2_functional_analysis.stimulus import stim_outlines
 
 pn.extension('plotly')
 
@@ -60,6 +57,7 @@ pn.extension('plotly')
 
 # %%
 df_rois = data_loader.load_df_rois()
+df_fields = data_loader.load_df_fields()
 df = data_loader.load_df_rois_morph(df_rois=df_rois)
 df = data_loader.add_skels(df, inplace=True)
 df = df.reset_index(drop=True)
@@ -70,7 +68,7 @@ print(f"{n_with_skel} / {len(df)} EM-matched ROI(s) have a skeleton file; the re
 REG_FILE = os.path.join(data_loader.DATA_REGISTRATION, data_loader.EM_2P_REGISTRATION_FILE)
 reg = registration.load_registration(REG_FILE)
 
-df['label'] = df.apply(lambda r: f"{r['field']} / ROI {r['roi_id']} - {r['Cell Type']}", axis=1)
+df['label'] = df.apply(lambda r: f"{r['field']} - ROI {r['roi_id']}\n{r['Cell Type']}", axis=1)
 
 # Fixed XY range for the cell-picker scatter, from the ROI cloud alone (with
 # some padding) -- kept constant regardless of which cell's skeleton is
@@ -89,7 +87,99 @@ MORPH_MIN_RAD_UM = MORPH_SCALE_BAR_UM / 2 + MORPH_MARGIN_UM
 FIELDS = sorted(df['field'].unique())
 
 # %% [markdown]
-# ## Cell picker (scatter + field/ROI dropdowns) and detail panel
+# ## Stimulus footprint overlay
+#
+# Geometry/parameters mirror `scripts/tutorial/plot_stimulus_overlay/plot_stimulus_overlay.py`.
+# The footprint is drawn at the *field's* registered centre (`load_df_fields`),
+# not any individual ROI's position, so it only depends on which field the
+# selected ROI belongs to.
+
+# %%
+FOV_DIAM_UM = 1000  # approx. field of view through the objective (W Plan-Apochromat 20x/1.0, Zeiss)
+
+BAR_DY_UM = 300.0
+BAR_DX_UM = 1000.0
+BAR_VEL_UM_S = 1000.0
+BAR_DUR_S = 4.0
+BAR_DIR_LIST = [0, 180, 45, 225, 90, 270, 135, 315]
+
+BAR_L_EDGE_UM = BAR_DY_UM
+BAR_TRAJ_LEN_UM = BAR_DUR_S * BAR_VEL_UM_S + BAR_DX_UM
+
+CHIRP_DIAM_UM = 1000
+
+MOUSECAM_FRAME_PX = 56
+MOUSECAM_SCALE = 12.5
+MOUSECAM_DX_UM = MOUSECAM_FRAME_PX * MOUSECAM_SCALE
+MOUSECAM_DY_UM = MOUSECAM_FRAME_PX * MOUSECAM_SCALE
+
+STIM_OPTIONS = {'Chirp': 'Chirp', 'Moving bar': 'DS', 'Mouse cam': 'MouseCam_Right'}
+
+
+def stimulus_footprint(stim_type, x0, y0):
+    """Shapely footprint of one stimulus presentation, positioned at (x0, y0), clipped to the FOV."""
+    if stim_type == 'DS':
+        return stim_outlines.movingBar(BAR_L_EDGE_UM, BAR_TRAJ_LEN_UM, BAR_DIR_LIST,
+                                        x0=x0, y0=y0, FOV_diam=FOV_DIAM_UM)
+    elif stim_type == 'Chirp':
+        return stim_outlines.spot(diam=CHIRP_DIAM_UM, x0=x0, y0=y0, FOV_diam=FOV_DIAM_UM)
+    elif stim_type == 'MouseCam_Right':
+        return stim_outlines.box(MOUSECAM_DX_UM, MOUSECAM_DY_UM, x0=x0, y0=y0, FOV_diam=FOV_DIAM_UM)
+    else:
+        raise ValueError(f"Unknown stimulus type {stim_type!r}")
+
+
+# 0/180, 45/225, 90/270 and 135/315 sweep the same rectangle (just in
+# opposite directions), so only 4 distinct bar orientations need to be drawn.
+BAR_DIRECTIONS_UNIQUE = [0, 45, 90, 135]
+
+
+def field_centre(field):
+    """(x0, y0) of `field`'s registered centre, in the retinal frame."""
+    field_row = df_fields[df_fields['field'] == field].iloc[0]
+    return field_row['field_temporal_nasal_pos_um'], field_row['field_ventral_dorsal_pos_um']
+
+
+def polys_to_xy(geom):
+    """Flatten a Shapely Polygon/MultiPolygon's exterior(s) into plotly x/y lists, None-separated."""
+    polys = geom.geoms if geom.geom_type == 'MultiPolygon' else [geom]
+    xs, ys = [], []
+    for poly in polys:
+        px, py = poly.exterior.xy
+        xs += list(px) + [None]
+        ys += list(py) + [None]
+    return xs, ys
+
+
+def stimulus_trace(stim_type, field):
+    """Plotly filled trace for `stim_type`'s footprint at `field`'s registered centre."""
+    x0, y0 = field_centre(field)
+    footprint = stimulus_footprint(stim_type, x0, y0)
+    xs, ys = polys_to_xy(footprint)
+    return go.Scatter(x=xs, y=ys, mode='lines', fill='toself',
+                       fillcolor='rgba(255, 215, 0, 0.4)', line=dict(color='black', width=1),
+                       hoverinfo='skip', showlegend=False)
+
+
+def bar_direction_trace(field):
+    """Plotly dashed trace of the actual moving-bar shape at each of the 4 distinct sweep directions."""
+    x0, y0 = field_centre(field)
+    xs, ys = [], []
+    for angle in BAR_DIRECTIONS_UNIQUE:
+        rect = stim_outlines.box(BAR_DY_UM, BAR_DX_UM, angle=angle, x0=x0, y0=y0, FOV_diam=FOV_DIAM_UM)
+        rect_xs, rect_ys = polys_to_xy(rect)
+        xs += rect_xs
+        ys += rect_ys
+    return go.Scatter(x=xs, y=ys, mode='lines', line=dict(color='black', width=1.5, dash='dash'),
+                       hoverinfo='skip', showlegend=False)
+
+
+def empty_line_trace():
+    return go.Scatter(x=[], y=[], mode='lines', hoverinfo='skip', showlegend=False)
+
+
+# %% [markdown]
+# ## Cell picker (scatter + field/ROI/stimulus dropdowns) and detail panel
 
 # %%
 def skel_edge_trace(row):
@@ -107,15 +197,16 @@ def skel_edge_trace(row):
                        hoverinfo='skip', showlegend=False)
 
 
-def make_scatter_figure(selected_idx=None):
-    """Build the XY cell-picker scatter, highlighting `selected_idx` and overlaying its skeleton.
+def make_scatter_figure(selected_idx=None, stim_type='Chirp'):
+    """Build the XY cell-picker scatter, highlighting `selected_idx`, overlaying its skeleton, and
+    drawing `stim_type`'s footprint at the selected ROI's field centre.
 
-    Always emits exactly 2 traces (ROI dots, then skeleton -- an empty one
-    when there's nothing to overlay) so the figure's trace count never
-    changes between renders. Panel/Plotly's `Plotly.react`-based update
-    otherwise gets confused about which trace is which when the trace count
-    changes from one selection to the next, which was causing stray/delayed
-    click events to resolve against the wrong point.
+    Always emits exactly 4 traces (ROI dots, skeleton, stimulus footprint,
+    bar-direction outlines -- empty traces when there's nothing to overlay)
+    so the figure's trace count never changes between renders. Panel/Plotly's
+    `Plotly.react`-based update otherwise gets confused about which trace is
+    which when the trace count changes from one selection to the next, which
+    was causing stray/delayed click events to resolve against the wrong point.
     """
     colors = ['steelblue'] * len(df)
     sizes = [8] * len(df)
@@ -137,15 +228,19 @@ def make_scatter_figure(selected_idx=None):
     if row is not None and row['skel'] is not None:
         skel_trace = skel_edge_trace(row)
     else:
-        skel_trace = go.Scatter(x=[], y=[], mode='lines', hoverinfo='skip', showlegend=False)
+        skel_trace = empty_line_trace()
 
-    fig = go.Figure(data=[roi_trace, skel_trace])
+    field = row['field'] if row is not None else FIELDS[0]
+    stim_footprint_trace = stimulus_trace(stim_type, field)
+    bar_dir_trace = bar_direction_trace(field) if stim_type == 'DS' else empty_line_trace()
+
+    fig = go.Figure(data=[roi_trace, skel_trace, stim_footprint_trace, bar_dir_trace])
     fig.update_layout(
         width=480, height=480,
         margin=dict(l=50, r=10, t=10, b=40),
         showlegend=False,
-        xaxis_title='Temporal <-> Nasal [um]',
-        yaxis_title='Ventral <-> Dorsal [um]',
+        xaxis_title='Temporal ↔ Nasal [um]',
+        yaxis_title='Ventral ↔ Dorsal [um]',
         xaxis=dict(range=X_RANGE),
         yaxis=dict(range=Y_RANGE, scaleanchor='x', scaleratio=1),
     )
@@ -162,12 +257,12 @@ def render_cell(idx):
         ax_morph = fig.add_subplot(gs[:, 0])
         if row['skel'] is not None:
             plot_morph.plot_morph(ax_morph, row, reg=reg, rad=None, min_rad=MORPH_MIN_RAD_UM, margin=MORPH_MARGIN_UM,
-                            scale_bar_um=MORPH_SCALE_BAR_UM, annotate_orientation=False)
+                            scale_bar_um=MORPH_SCALE_BAR_UM, annotate_orientation=True)
         else:
             ax_morph.text(0.5, 0.5, f"no skeleton found for {row['Latest SegID']}",
-                          ha='center', va='center', wrap=True, fontsize=9)
+                          ha='center', va='center', wrap=True)
             ax_morph.axis('off')
-        ax_morph.set_title(row['label'], fontsize=10)
+        ax_morph.set_title(row['label'])
 
         plot_traces.plot_bar_dir_grid(fig, gs[:, 1], row)  # sets its own DSI/OSI suptitle
 
@@ -177,7 +272,11 @@ def render_cell(idx):
 
         ax_mc = fig.add_subplot(gs[1, 2])
         plot_traces.plot_mc_test_snippets(ax_mc, row)
-        ax_mc.set_title('Mouse cam (3 test reps)', fontsize=9)
+        ax_mc.set_title('Mouse cam (3 test reps)')
+
+        for ax in (ax_chirp, ax_mc):
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
 
         fig.tight_layout()
     except Exception as e:
@@ -195,21 +294,24 @@ def roi_options_for_field(field):
 
 field_dropdown = pn.widgets.Select(name='Field', options=FIELDS, value=FIELDS[0])
 roi_dropdown = pn.widgets.Select(name='ROI', options=roi_options_for_field(FIELDS[0]))
+stim_dropdown = pn.widgets.Select(name='Stimulus outline', options=STIM_OPTIONS, value='Chirp')
 
-scatter_pane = pn.pane.Plotly(make_scatter_figure(selected_idx=roi_dropdown.value))
+scatter_pane = pn.pane.Plotly(make_scatter_figure(selected_idx=roi_dropdown.value, stim_type=stim_dropdown.value))
 detail_pane = pn.pane.Matplotlib(render_cell(roi_dropdown.value), tight=True, format='png', dpi=100)
 
 
 def select_index(idx):
     """Update the scatter highlight/overlay and the detail panel for global row `idx`.
 
-    This is the *only* place that actually redraws anything. Both the ROI
-    dropdown and the scatter click handler just set `roi_dropdown.value`;
+    This is the *only* place that actually redraws the detail panel. Both the
+    ROI dropdown and the scatter click handler just set `roi_dropdown.value`;
     it's the dropdown's own 'value' watcher (`on_roi_change`, below) that
-    calls this -- so there's exactly one codepath that updates the UI,
-    regardless of how the selection was made.
+    calls this -- so there's exactly one codepath that updates the detail
+    panel, regardless of how the selection was made. The scatter itself is
+    redrawn here too (its stimulus footprint follows the newly selected
+    ROI's field), reusing the currently selected stimulus type.
     """
-    scatter_pane.object = make_scatter_figure(selected_idx=idx)
+    scatter_pane.object = make_scatter_figure(selected_idx=idx, stim_type=stim_dropdown.value)
 
     old_fig = detail_pane.object
     detail_pane.object = render_cell(idx)
@@ -218,6 +320,10 @@ def select_index(idx):
 
 def on_roi_change(event):
     select_index(event.new)
+
+
+def on_stim_change(event):
+    scatter_pane.object = make_scatter_figure(selected_idx=roi_dropdown.value, stim_type=event.new)
 
 
 # Set True while `on_scatter_click` is repointing `field_dropdown` at a
@@ -249,7 +355,7 @@ def on_scatter_click(event):
         return
     point = click_data['points'][0]
     if point.get('curveNumber', 0) != 0:
-        return  # ignore clicks on the skeleton-overlay trace
+        return  # ignore clicks on the skeleton/stimulus-overlay traces
     idx = point.get('pointIndex', point.get('pointNumber'))
     field = df.iloc[idx]['field']
 
@@ -267,22 +373,8 @@ def on_scatter_click(event):
 
 field_dropdown.param.watch(on_field_change, 'value')
 roi_dropdown.param.watch(on_roi_change, 'value')
+stim_dropdown.param.watch(on_stim_change, 'value')
 scatter_pane.param.watch(on_scatter_click, 'click_data')
 
-layout = pn.Row(pn.Column(scatter_pane, field_dropdown, roi_dropdown), detail_pane)
+layout = pn.Row(pn.Column(scatter_pane, field_dropdown, roi_dropdown, stim_dropdown), detail_pane)
 layout.servable()
-
-# %% [markdown]
-# ## Scratch: tweak the detail figure directly
-#
-# Bypasses the Panel widgets/dropdowns entirely -- just builds and shows one
-# cell's detail figure (`render_cell`) inline, so the plotting code itself
-# can be iterated on directly. Change `idx` below, or look up a specific
-# ROI's index with e.g. `roi_options_for_field('GCL0')`.
-
-# %%
-idx = 0
-fig = render_cell(idx)
-plt.show()
-
-# %%

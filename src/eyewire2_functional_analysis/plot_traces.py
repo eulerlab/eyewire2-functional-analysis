@@ -2,13 +2,8 @@ from matplotlib import pyplot as plt
 import numpy as np
 import warnings
 
-from eyewire2_functional_analysis.ds import get_time_dir_kernels, preprocess_mb_snippets
+from eyewire2_functional_analysis.ds import MB_DIRS, MB_DIRS_SYMBOLS_D_UP, MB_DIRS_SYMBOLS_V_UP, get_time_dir_kernels, preprocess_mb_snippets
 from eyewire2_functional_analysis.plot_utils import plot_scale_bar
-
-# Moving bar directions and symbols
-MB_DIRS              = (0,  180,   45,  225,  90, 270, 135, 315)
-MB_DIRS_SYMBOLS_V_UP = ('↓', '↑', '↙', '↗', '←', '→', '↖', '↘')
-MB_DIRS_SYMBOLS_D_UP = ('↑', '↓', '↗', '↙', '→', '←', '↘', '↖')
 
 # Time (s) of stimulus onset / direction reversal / offset within a moving-bar
 # snippet, matching the vlines used in plot_dataframe.plot_df_chirp_and_bar.
@@ -25,6 +20,33 @@ DIR_GRID_LAYOUT = ((0, 0, 7), (0, 1, 0), (0, 2, 1),
                     (1, 0, 6),           (1, 2, 2),
                     (2, 0, 5), (2, 1, 4), (2, 2, 3))
 
+
+def plot_mean_and_sd(ax, traces, time, color='black', alt_color='dimgray', facealpha=0.2, offset=0.0):
+    """Plot the mean of multiple traces with a shaded ±1 SD band.
+
+    If fewer than three traces are provided, individual traces are plotted instead
+    of a mean ± SD.
+
+    Args:
+        ax: Matplotlib Axes to plot on.
+        traces: Array of shape ``(n_traces, time)`` containing the trace data.
+        time: 1-D time array aligned with the trace axis.
+        color: Colour for the mean line and SD band.
+        alt_color: Colour for the second trace when only two traces are provided.
+        facealpha: Alpha transparency for the SD fill-between band.
+        offset: Scalar offset added to the mean before plotting.
+    """
+    if traces.shape[0] <= 2:
+        ax.plot(time, traces[0] - np.mean(traces[0]) + offset, color=color)
+        if len(traces) == 2:
+            ax.plot(time, traces[1] - np.mean(traces[1]) + offset, color=alt_color)
+    else:
+        mu = np.mean(traces, axis=0)
+        mu = mu - np.mean(mu) + offset
+        sd = np.std(traces, axis=0)
+
+        ax.plot(time, mu, color=color)
+        ax.fill_between(time, mu - sd, mu + sd, color=color, alpha=facealpha)
 
 
 def plot_snippets_and_average(
@@ -87,6 +109,7 @@ def plot_snippets_and_average(
     if average_time is None:
         average_time = time
     avg_line, = ax.plot(average_time, average, color=average_color, lw=average_lw, clip_on=clip_on)
+    ax.fill_between(average_time, average, np.zeros_like(average), color=average_color, alpha=0.1, clip_on=clip_on)
 
     if hline:
         ax.axhline(0, color=hline_color, ls=hline_ls)
@@ -98,6 +121,8 @@ def plot_snippets_and_average(
         vmin = data_min if vline_ymin is None else vline_ymin
         vmax = data_max if vline_ymax is None else vline_ymax
         ax.vlines(vlines, ymin=vmin, ymax=vmax, colors=vline_color, linestyles=vline_ls, lw=vline_lw, clip_on=clip_on)
+
+    ax.set(xlabel='Times (s)', ylabel='Norm. Ca.')
 
     return avg_line
 
@@ -203,7 +228,7 @@ def plot_mc_test_snippets(ax, row, test_indices=(0, 59, 118)):
     `plot_traces.plot_snippets_and_average` helper used by `plot.plot_chirp`/
     `plot.plot_bar`/`plot.plot_bar_dir_grid`.
     """
-    mc_trace = row.mc_trace
+    mc_trace = row.mc_pp_trace
     mc_time = np.arange(mc_trace.size) * row.mc_trace_dt + row.mc_trace_t0
     mc_tt = row.mc_triggertimes
     mc_tt = np.append(mc_tt, mc_tt[-1] + np.median(np.diff(mc_tt)))
@@ -223,13 +248,11 @@ def plot_mc_test_snippets(ax, row, test_indices=(0, 59, 118)):
     rel_tt = mc_tt[test_indices[0]:test_indices[0] + 6] - mc_tt[test_indices[0]]
     plot_snippets_and_average(
         ax, t_common, snippets,
-        vlines=rel_tt, vline_ymin=mc_ylim[1] - np.diff(mc_ylim)[0] * 0.1, vline_ymax=mc_ylim[1],
+        vlines=rel_tt, vline_ymin=mc_ylim[0], vline_ymax=mc_ylim[1],
     )
-    plot_scale_bar(ax=ax, x0=rel_tt[0] + 2.5, y0=mc_ylim[0] + 2, size=5, text=True,
-                        unit='s', tdist=1, fontsize=8)
 
 
-def plot_chirp(ax, row, stimulus_ms=None, plot_hline=True, plot_vlines=False, lw=1):
+def plot_chirp(ax, row, stimulus_ms=None, plot_hline=True, plot_vlines=True, lw=1):
     """Plot chirp stimulus response snippets and their normalised average onto ``ax``.
 
     Args:
@@ -247,7 +270,7 @@ def plot_chirp(ax, row, stimulus_ms=None, plot_hline=True, plot_vlines=False, lw
     average = row['chirp_average_norm']
     average_time = np.arange(len(average)) * row['chirp_average_dt']
 
-    plot_traces.plot_snippets_and_average(
+    plot_snippets_and_average(
         ax, time, norm_snippets, average=average, average_time=average_time,
         hline=plot_hline, vlines=[2, 5, 8, 30] if plot_vlines else None,
         snippet_lw=lw, average_lw=lw,
@@ -283,7 +306,7 @@ def plot_bar(ax, row, annotate_dirs=False, annotate_symbols=False, ventral_up=Fa
     for i, (dir_deg, symbol) in enumerate(zip(MB_DIRS, mb_symbols)):
         snippets = row['bar_snippets'][:, np.array([0, 8, 16]) + i] / vmax
         time = (np.arange(0, snippets.shape[0]) + (snippets.shape[0] * 1.2 * i)) * row['bar_snippets_dt']
-        plot_traces.plot_snippets_and_average(ax, time, snippets, hline=True, snippet_lw=lw, average_lw=lw)
+        plot_snippets_and_average(ax, time, snippets, hline=True, snippet_lw=lw, average_lw=lw)
         if annotate_dirs or annotate_symbols:
             x = time[0] + 0.5 * (time[-1] - time[0])
             y = 1.15
@@ -300,17 +323,25 @@ def plot_bar(ax, row, annotate_dirs=False, annotate_symbols=False, ventral_up=Fa
                 )
 
 
-def plot_bar_dir(ax, row, ventral_up=False, lw=1):
-    """Plot the directional tuning curve (polar plot) derived from moving-bar snippets.
+def plot_bar_dir(ax, row, ventral_up=False, lw=1, annotate_ticks=True, plot_ref_lines=False):
+    """Plot the moving-bar direction-tuning curve and preferred-direction vector on a polar axes.
 
-    Performs SVD-based decomposition to extract the direction component and renders
-    it on a polar axes with cardinal direction labels.
+    Performs SVD-based decomposition to extract the direction-tuning curve, then
+    combines it with the fitted preferred-direction vector (`row['bar_pref_dir']`,
+    `row['bar_ds_index']`).
 
     Args:
         ax: Matplotlib polar Axes to plot on.
-        row: DataFrame row containing ``'bar_snippets'`` and ``'bar_snippets_dt'``.
+        row: DataFrame row containing ``'bar_snippets'``, ``'bar_snippets_dt'``,
+            ``'bar_pref_dir'``, and ``'bar_ds_index'``.
         ventral_up: Determines the arrow-symbol convention for direction tick labels.
         lw: Line width for the tuning curve.
+        annotate_ticks: If ``True``, label the cardinal directions with arrow
+            symbols and show radial ticks; if ``False``, hide all ticks (used
+            for the compact center cell in `plot_bar_dir_grid`).
+        plot_ref_lines: If ``True``, draw light gray horizontal/vertical
+            reference lines through the origin (used in `plot_bar_dir_grid` to
+            visually separate the polar cell from the surrounding grid).
 
     Raises:
         ValueError: If ``bar_snippets`` or the derived ``dir_component`` contain
@@ -319,32 +350,47 @@ def plot_bar_dir(ax, row, ventral_up=False, lw=1):
     if np.any(~np.isfinite(row['bar_snippets'])):
         raise ValueError('bar_snippets not finite')
 
-    sorted_directions, sorted_responses, sorted_averages = preprocess_mb_snippets(snippets=row['bar_snippets'])
-    time_component, dir_component = get_time_dir_kernels(sorted_averages, dt=row['bar_snippets_dt'])
-    sorted_directions = np.append(sorted_directions, sorted_directions[0])
-    dir_component = np.append(dir_component, dir_component[0])
+    sorted_directions, _, avg_sorted_resp = preprocess_mb_snippets(snippets=row['bar_snippets'])
+    _, dir_component = get_time_dir_kernels(avg_sorted_resp, dt=row['bar_snippets_dt'])
+    # The raw SVD-derived vector is only normalized to unit L2-norm and can dip
+    # slightly negative; clip to 0 since the polar axes (rmin=0) can't render
+    # negative radii anyway.
+    dir_component = np.clip(dir_component, 0, None)
 
     if np.any(~np.isfinite(dir_component)):
         raise ValueError('dir_component not finite')
 
-    ax.plot(sorted_directions, np.clip(dir_component, 0, None), color='black', lw=lw)
-
     ax.set_theta_zero_location('N')
     ax.set_theta_direction(-1)
 
-    ax.xaxis.set_tick_params(pad=-20)
-    dirs = [0, 90, 180, 270]
-    mb_symbols = MB_DIRS_SYMBOLS_V_UP if ventral_up else MB_DIRS_SYMBOLS_D_UP
+    rmax = np.max(np.append(dir_component, row['bar_ds_index']))
 
-    ax.set(xlabel=None, ylabel=None, yticks=[0, np.max(dir_component)])
-    ax.set_ylim(0, np.max(dir_component))
-    ax.set_xticks(np.deg2rad(dirs))
-    ax.set_xticklabels([mb_symbols[np.argmax(np.array(MB_DIRS) == d)] for d in dirs],
-                       fontsize=10, fontweight='bold', fontname='DejaVu Sans', color='#999999')
-    ax.set_yticklabels([])
+    if plot_ref_lines:
+        ax.plot((0, np.pi), (rmax * 1.2, rmax * 1.2), color='gray')
+        ax.plot((np.pi / 2, np.pi / 2 * 3), (rmax * 1.2, rmax * 1.2), color='gray')
+
+    ax.plot([0, row['bar_pref_dir']], [0, max(dir_component)], color='r')
+    ax.plot(np.append(sorted_directions, sorted_directions[0]),
+            np.append(dir_component, dir_component[0]), color='black', lw=lw)
+
+    ax.set_rmin(0)
+
+    if annotate_ticks:
+        ax.xaxis.set_tick_params(pad=-20)
+        dirs = [0, 90, 180, 270]
+        mb_symbols = MB_DIRS_SYMBOLS_V_UP if ventral_up else MB_DIRS_SYMBOLS_D_UP
+        ax.set(xlabel=None, ylabel=None, yticks=[0, rmax])
+        ax.set_ylim(0, rmax)
+        ax.set_xticks(np.deg2rad(dirs))
+        ax.set_xticklabels([mb_symbols[np.argmax(np.array(MB_DIRS) == d)] for d in dirs],
+                           fontsize=10, fontweight='bold', fontname='DejaVu Sans', color='#999999')
+        ax.set_yticklabels([])
+    else:
+        ax.set_thetalim([0, 2 * np.pi])
+        ax.set_yticks([])
 
 
-def plot_bar_dir_grid(fig, gs, row):
+def plot_bar_dir_grid(fig, gs, row, plot_hline=True):
     """Plot per-direction moving-bar repeats/averages plus a polar tuning plot in a 3x3 grid.
 
     Reproduces the DS/OS summary layout of the original DataJoint ``plot1``
@@ -359,6 +405,7 @@ def plot_bar_dir_grid(fig, gs, row):
         row: DataFrame row containing ``'bar_snippets'``, ``'bar_snippets_dt'``,
             ``'bar_pref_dir'``, ``'bar_ds_index'``, ``'bar_ds_pvalue'``,
             ``'bar_pref_or'``, ``'bar_os_index'``, and ``'bar_os_pvalue'``.
+        plot_hline: Whether to plot a horizontal line at y=0.
 
     Returns:
         tuple: ``(axs, ax_polar)`` -- dict of the 8 Cartesian axes keyed by
@@ -366,143 +413,41 @@ def plot_bar_dir_grid(fig, gs, row):
     """
     sub_gs = gs.subgridspec(3, 3) if hasattr(gs, "subgridspec") else gs
 
-    sorted_directions, sorted_responses, avg_sorted_resp = preprocess_mb_snippets(row['bar_snippets'])
+    _, sorted_responses, avg_sorted_resp = preprocess_mb_snippets(row['bar_snippets'])
     dt = row['bar_snippets_dt']
-    # Recompute dir_component from the raw snippets rather than using the stored
-    # 'bar_dir_component' column, which is min-max normalized (min forced to 0,
-    # max forced to 1) and so cannot be compared in amplitude across cells.
-    # This raw SVD-derived vector is only normalized to unit L2-norm and can dip
-    # slightly negative; clip to 0 since the polar axes (rmin=0) can't render
-    # negative radii anyway.
-    _, dir_component = get_time_dir_kernels(avg_sorted_resp, dt=dt)
-    dir_component = np.clip(dir_component, 0, None)
 
     # Range across individual repeats (not just the average), since those are
     # now drawn too and can have larger excursions than their mean.
     ymin, ymax = np.min(sorted_responses), np.max(sorted_responses)
 
+    time = np.arange(avg_sorted_resp.shape[0]) * dt
+    xmin, xmax = time[0], time[-1]
+
     axs = {}
     for r, c, dir_idx in DIR_GRID_LAYOUT:
         ax = fig.add_subplot(sub_gs[r, c])
         axs[(r, c)] = ax
-        time = np.arange(avg_sorted_resp.shape[0]) * dt
-        plot_traces.plot_snippets_and_average(
+        plot_snippets_and_average(
             ax, time, sorted_responses[:, dir_idx, :], average=avg_sorted_resp[:, dir_idx],
-            vlines=BAR_STIM_TIMES,
+            vlines=BAR_STIM_TIMES, hline=plot_hline,
         )
+        ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.set_xticks([])
-        ax.set_yticks([])
+        ax.tick_params(labelleft=(c == 0), labelbottom=(r == 2))
+        if c != 0:
+            ax.set_ylabel(None)
+        if r != 2:
+            ax.set_xlabel(None)
 
     ax_polar = fig.add_subplot(sub_gs[1, 1], projection='polar', frameon=False)
-    # Match the surrounding grid: 0 deg at the top, going clockwise from there
-    # (dorsal=top, ventral=bottom, temporal=left, nasal=right).
-    ax_polar.set_theta_zero_location('N')
-    ax_polar.set_theta_direction(-1)
-    temp = np.max(np.append(dir_component, row['bar_ds_index']))
-    ax_polar.plot((0, np.pi), (temp * 1.2, temp * 1.2), color='gray')
-    ax_polar.plot((np.pi / 2, np.pi / 2 * 3), (temp * 1.2, temp * 1.2), color='gray')
-    ax_polar.plot([0, row['bar_pref_dir']], [0, row['bar_ds_index'] * np.sum(dir_component)], color='r')
-    ax_polar.plot(np.append(sorted_directions, sorted_directions[0]),
-                  np.append(dir_component, dir_component[0]), color='k')
-    ax_polar.set_rmin(0)
-    ax_polar.set_thetalim([0, 2 * np.pi])
-    ax_polar.set_yticks([])
+    plot_bar_dir(ax_polar, row, annotate_ticks=False, plot_ref_lines=True)
 
-    fig.suptitle(
-        f"DSI: {row['bar_ds_index']:.2f}, "
-        f"Pref-Dir: {(360 + np.rad2deg(row['bar_pref_dir'])) % 360:.0f}°; p={row['bar_ds_pvalue']:.2f}\n"
-        f"OSI: {row['bar_os_index']:.2f}, "
-        f"Pref-Or: {(180 + np.rad2deg(row['bar_pref_or'])) % 180:.0f}°; p={row['bar_os_pvalue']:.2f}"
+    axs[0, 1].set_title(
+        f"Moving bar direction tuning\n"
+        f"DSI: {row['bar_ds_index']:.2f}, Pref-Dir: {(360 + np.rad2deg(row['bar_pref_dir'])) % 360:3.0f}°; p={row['bar_ds_pvalue']:.2f}\n"
+        f"OSI: {row['bar_os_index']:.2f}, Pref-Or:  {(180 + np.rad2deg(row['bar_pref_or'])) % 180:3.0f}°; p={row['bar_os_pvalue']:.2f}"
     )
 
     return axs, ax_polar
-
-
-def plot_bar_block(ax, row, i, show_symbol=True, ventral_up=False):
-    """
-    Plot ONE direction block (index i: 0..7) on the given Cartesian axes.
-    Matches your original styling.
-    """
-    snippets = row['bar_snippets'][:, np.array([0, 8, 16]) + i]
-    time = (np.arange(0, snippets.shape[0]) + (snippets.shape[0] * 1.2 * i)) * row['bar_snippets_dt']
-
-    # traces
-    for trace in snippets.T:
-        ax.plot(time, trace, color='dimgray', alpha=0.5)
-    # mean
-    ax.plot(time, np.mean(snippets, axis=1), color='black', alpha=0.8)
-    ax.axhline(0, c='dimgray', ls='--')
-
-    mb_symbols = MB_DIRS_SYMBOLS_V_UP if ventral_up else MB_DIRS_SYMBOLS_D_UP
-
-    # label
-    if show_symbol:
-        x = time[0] + 0.5 * (time[-1] - time[0])
-        y_max = np.max(row['bar_snippets'])
-        y = y_max + 0.25 * (np.max(row['bar_snippets']) - np.min(row['bar_snippets']))  # relative offset
-        ax.text(
-            x, y, mb_symbols[i],
-            ha='center', va='top',
-            fontsize=10,
-            fontweight='bold',
-            fontname='DejaVu Sans',
-        )
-
-    # clean look (like your grid cells)
-    ax.set(xlabel=None, ylabel=None, xticks=[], yticks=[])
-    ax.axis('off')
-
-
-def plot_bar_split(ax_map, row, labels=('C', 'D', 'E', 'F', 'H', 'I', 'J', 'K'),
-                   dir_idx_order=(0, 1, 2, 3, 4, 5, 6, 7)):
-    """Plot the 8 direction blocks into named axes in a specified order.
-
-    Each direction block is plotted into the axes identified by the corresponding
-    label in ``labels``. All axes share the same y-limits.
-
-    Args:
-        ax_map: Dict mapping label strings to Matplotlib Axes objects.
-        row: DataFrame row containing ``'bar_snippets'``.
-        labels: Sequence of axis label keys in ``ax_map`` (one per direction).
-        dir_idx_order: Which data block index (0–7) maps to each label position.
-    """
-    y_max = float(np.nanmax(row['bar_snippets']))
-    y_min = float(np.nanmin(row['bar_snippets']))
-    y_span = (y_max - y_min) if (y_max > y_min) else 1.0
-    y_top = y_max + 0.15 * y_span
-
-    for lab, idx in zip(labels, dir_idx_order):
-        ax = ax_map[lab]
-        plot_bar_block(ax, row, idx, show_symbol=True)
-        ax.set_ylim(y_min, y_top)
-
-
-def plot_mean_and_sd(ax, traces, time, color='black', alt_color='dimgray', facealpha=0.2, offset=0.0):
-    """Plot the mean of multiple traces with a shaded ±1 SD band.
-
-    If fewer than three traces are provided, individual traces are plotted instead
-    of a mean ± SD.
-
-    Args:
-        ax: Matplotlib Axes to plot on.
-        traces: Array of shape ``(n_traces, time)`` containing the trace data.
-        time: 1-D time array aligned with the trace axis.
-        color: Colour for the mean line and SD band.
-        alt_color: Colour for the second trace when only two traces are provided.
-        facealpha: Alpha transparency for the SD fill-between band.
-        offset: Scalar offset added to the mean before plotting.
-    """
-    if traces.shape[0] <= 2:
-        ax.plot(time, traces[0] - np.mean(traces[0]) + offset, color=color)
-        if len(traces) == 2:
-            ax.plot(time, traces[1] - np.mean(traces[1]) + offset, color=alt_color)
-    else:
-        mu = np.mean(traces, axis=0)
-        mu = mu - np.mean(mu) + offset
-        sd = np.std(traces, axis=0)
-
-        ax.plot(time, mu, color=color)
-        ax.fill_between(time, mu - sd, mu + sd, color=color, alpha=facealpha)

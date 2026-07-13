@@ -44,7 +44,7 @@ def plot_ds_on_morph(row, reg=None, rotation_deg=None, annotate_orientation=None
     return fig
 
 
-def annotate_retinal_axes(ax, fontsize=9, pad_pt=22, color='dimgray'):
+def annotate_retinal_axes(ax, fontsize=9, pad_pt=4, color='dimgray'):
     """Label the 4 edges of a `plot_morph` axes with the retinal directions.
 
     Only correct for a `plot_morph` axes whose skeleton was rotated into the
@@ -61,16 +61,18 @@ def annotate_retinal_axes(ax, fontsize=9, pad_pt=22, color='dimgray'):
         ax: A `plot_morph` Axes.
         fontsize: Label font size.
         pad_pt: Distance from the axes edge to each label, in points (a fixed
-            point offset clears the tick labels regardless of axes size,
+            point offset clears the axes border regardless of axes size,
             unlike an axes-fraction pad).
         color: Label colour.
     """
     kwargs = dict(xycoords='axes fraction', textcoords='offset points',
                   fontsize=fontsize, color=color, clip_on=False, annotation_clip=False)
-    ax.annotate('Nasal', xy=(1, 0.5), xytext=(pad_pt, 0), ha='left', va='center', **kwargs)
-    ax.annotate('Temporal', xy=(0, 0.5), xytext=(-pad_pt, 0), ha='right', va='center', **kwargs)
-    ax.annotate('Dorsal', xy=(0.5, 1), xytext=(0, pad_pt), ha='center', va='bottom', **kwargs)
-    ax.annotate('Ventral', xy=(0.5, 0), xytext=(0, -pad_pt), ha='center', va='top', **kwargs)
+    ax.annotate('Nasal', xy=(1, 0.5), xytext=(-pad_pt, 0), ha='right', va='center',
+                rotation=90, **kwargs)
+    ax.annotate('Temporal', xy=(0, 0.5), xytext=(pad_pt, 0), ha='left', va='center',
+                rotation=90, **kwargs)
+    ax.annotate('Dorsal', xy=(0.5, 1), xytext=(0, -pad_pt), ha='center', va='top', **kwargs)
+    ax.annotate('Ventral', xy=(0.5, 0), xytext=(0, pad_pt), ha='center', va='bottom', **kwargs)
 
 
 def plot_em_axis_indicator(ax, reg, field=None, direction='em_to_2p', center=None, scale=None,
@@ -207,8 +209,10 @@ def plot_morph(ax, row, rad: float | None = 150, reg=None, rotation_deg=None, an
         plot_em_axis_indicator(ax, reg, field=row['field'], direction='em_to_2p')
 
     if scale_bar_um is not None:
-        plot_scale_bar(ax=ax, x0=sx - rad + scale_bar_um / 2 + 5, y0=sy - rad + 5,
-                        size=scale_bar_um, unit='µm', text=True, fontsize=8)
+        plot_scale_bar(ax=ax, x0=sx - rad + scale_bar_um / 2 + 0.05 * rad, y0=sy - rad + 0.05 * rad,
+                       tdist=-0.1*rad, size=scale_bar_um, unit='µm', text=True, fontsize=8)
+
+    ax.set(xlabel='X from 2p (µm)', ylabel='Y from 2p (µm)', aspect='equal')
 
     return sx, sy, sz
 

@@ -45,7 +45,7 @@ import numpy as np
 import panel as pn
 import plotly.graph_objects as go
 
-from eyewire2_functional_analysis import data_loader, plot, plot_traces, registration
+from eyewire2_functional_analysis import data_loader, plot_morph, plot_traces, registration
 from eyewire2_functional_analysis.space_mapping import align_and_place_skel
 
 pn.extension('plotly')
@@ -152,43 +152,6 @@ def make_scatter_figure(selected_idx=None):
     return fig
 
 
-def plot_mc_snippet(ax, row, test_indices=(0, 59, 118)):
-    """Zoomed mouse-cam response snippets, overlaid across all 3 test-clip repetitions.
-
-    Adapts the ``axs['C']`` panel of `scripts/tutorial/stimuli/mouse_cam_movies.py`
-    (which only showed one repetition) to overlay all of them, aligned to a
-    common local time axis, plus their average, via the same
-    `plot_traces.plot_snippets_and_average` helper used by `plot.plot_chirp`/
-    `plot.plot_bar`/`plot.plot_bar_dir_grid`.
-    """
-    mc_trace = row.mc_trace
-    mc_time = np.arange(mc_trace.size) * row.mc_trace_dt + row.mc_trace_t0
-    mc_tt = row.mc_triggertimes
-    mc_tt = np.append(mc_tt, mc_tt[-1] + np.median(np.diff(mc_tt)))
-    mc_ylim = (mc_trace.min(), mc_trace.max())
-
-    ax.axis('off')
-
-    t_common = None
-    snippets = []
-    for test_i in test_indices:
-        t0, t1 = mc_tt[test_i], mc_tt[test_i + 5]
-        ilim = (mc_time >= t0) & (mc_time <= t1)
-        t_rel = mc_time[ilim] - t0
-        if t_common is None:
-            t_common = t_rel
-        snippets.append(np.interp(t_common, t_rel, mc_trace[ilim]))
-    snippets = np.stack(snippets, axis=1)
-
-    rel_tt = mc_tt[test_indices[0]:test_indices[0] + 6] - mc_tt[test_indices[0]]
-    plot_traces.plot_snippets_and_average(
-        ax, t_common, snippets,
-        vlines=rel_tt, vline_ymin=mc_ylim[1] - np.diff(mc_ylim)[0] * 0.1, vline_ymax=mc_ylim[1],
-    )
-    plot.plot_scale_bar(ax=ax, x0=rel_tt[0] + 2.5, y0=mc_ylim[0] + 2, size=5, text=True,
-                        unit='s', tdist=1, fontsize=8)
-
-
 def render_cell(idx):
     """Detail figure for row `idx`: DS-on-morph (left, full height), chirp (top right), mouse-cam snippet (bottom right)."""
     row = df.iloc[idx]
@@ -198,7 +161,7 @@ def render_cell(idx):
 
         ax_morph = fig.add_subplot(gs[:, 0])
         if row['skel'] is not None:
-            plot.plot_morph(ax_morph, row, reg=reg, rad=None, min_rad=MORPH_MIN_RAD_UM, margin=MORPH_MARGIN_UM,
+            plot_morph.plot_morph(ax_morph, row, reg=reg, rad=None, min_rad=MORPH_MIN_RAD_UM, margin=MORPH_MARGIN_UM,
                             scale_bar_um=MORPH_SCALE_BAR_UM, annotate_orientation=False)
         else:
             ax_morph.text(0.5, 0.5, f"no skeleton found for {row['Latest SegID']}",
@@ -206,14 +169,14 @@ def render_cell(idx):
             ax_morph.axis('off')
         ax_morph.set_title(row['label'], fontsize=10)
 
-        plot.plot_bar_dir_grid(fig, gs[:, 1], row)  # sets its own DSI/OSI suptitle
+        plot_traces.plot_bar_dir_grid(fig, gs[:, 1], row)  # sets its own DSI/OSI suptitle
 
         ax_chirp = fig.add_subplot(gs[0, 2])
-        plot.plot_chirp(ax_chirp, row)
+        plot_traces.plot_chirp(ax_chirp, row)
         ax_chirp.set_title('Chirp')
 
         ax_mc = fig.add_subplot(gs[1, 2])
-        plot_mc_snippet(ax_mc, row)
+        plot_traces.plot_mc_test_snippets(ax_mc, row)
         ax_mc.set_title('Mouse cam (3 test reps)', fontsize=9)
 
         fig.tight_layout()
@@ -308,5 +271,18 @@ scatter_pane.param.watch(on_scatter_click, 'click_data')
 
 layout = pn.Row(pn.Column(scatter_pane, field_dropdown, roi_dropdown), detail_pane)
 layout.servable()
+
+# %% [markdown]
+# ## Scratch: tweak the detail figure directly
+#
+# Bypasses the Panel widgets/dropdowns entirely -- just builds and shows one
+# cell's detail figure (`render_cell`) inline, so the plotting code itself
+# can be iterated on directly. Change `idx` below, or look up a specific
+# ROI's index with e.g. `roi_options_for_field('GCL0')`.
+
+# %%
+idx = 0
+fig = render_cell(idx)
+plt.show()
 
 # %%

@@ -26,6 +26,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 import seaborn as sns
 
+from eyewire2_functional_analysis.plot_traces import plot_chirp
+
 # %%
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIG_DIR = os.path.join(HERE, 'figures')
@@ -149,7 +151,7 @@ bar_time = np.arange(row.bar_trace.size) * row.bar_trace_dt + row.bar_trace_t0
 mc_time = np.arange(row.mc_trace.size) * row.mc_trace_dt + row.mc_trace_t0
 
 # %%
-from eyewire2_functional_analysis.plot import plot_chirp, plot_bar
+from eyewire2_functional_analysis.plot_traces import plot_bar
 
 # %%
 fig, axs = plt.subplots(3, 3, figsize=(15, 7))

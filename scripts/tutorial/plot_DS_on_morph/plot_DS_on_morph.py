@@ -26,7 +26,7 @@ import os
 import matplotlib.pyplot as plt
 
 from eyewire2_functional_analysis import data_loader, registration
-from eyewire2_functional_analysis.plot import plot_ds_on_morph
+from eyewire2_functional_analysis.plot_morph import plot_ds_on_morph
 
 # %%
 HERE = os.path.dirname(os.path.abspath(__file__))

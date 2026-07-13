@@ -56,7 +56,7 @@ plt.savefig(os.path.join(FIG_DIR, 'mc_frames.pdf'))
 # # Plot
 
 # %%
-from eyewire2_functional_analysis import plot
+from eyewire2_functional_analysis import plot_utils
 
 # %%
 row = df.iloc[0]
@@ -96,7 +96,7 @@ ax.vlines(mc_tt, ymin=mc_ylim[1] - np.diff(mc_ylim) * 0.1, ymax=mc_ylim[1], colo
           label='Trigger')
 
 ax.legend(bbox_to_anchor=(0.8, 0.5), loc='center left', borderaxespad=0., frameon=False, handlelength=1.5, )
-plot.plot_scale_bar(ax=ax, x0=np.mean(mc_tt[:len(mc_tt) // 2]), y0=mc_ylim[0] + 3, size=60, text=True, unit='s',
+plot_utils.plot_scale_bar(ax=ax, x0=np.mean(mc_tt[:len(mc_tt) // 2]), y0=mc_ylim[0] + 3, size=60, text=True, unit='s',
                     tdist=1, fontsize=8)
 ax.set_xlim(mc_time[0], mc_time[-1] + (mc_time[-1] - mc_time[0]) * 0.35)
 
@@ -111,7 +111,7 @@ for test_i in [59]:
 
 ax.vlines(mc_tt[59 - 2:59 + 5 + 2], ymin=mc_ylim[1] - np.diff(mc_ylim) * 0.1, ymax=mc_ylim[1], colors='k',
           linestyles='-', lw=1)
-plot.plot_scale_bar(ax=ax, x0=mc_tt[59] + 2.5, y0=mc_ylim[0] + 2, size=5, text=True, unit='s', tdist=1, fontsize=8)
+plot_utils.plot_scale_bar(ax=ax, x0=mc_tt[59] + 2.5, y0=mc_ylim[0] + 2, size=5, text=True, unit='s', tdist=1, fontsize=8)
 
 for i in range(5):
     seq = 59 + i

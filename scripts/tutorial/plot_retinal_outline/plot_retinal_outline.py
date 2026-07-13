@@ -29,9 +29,7 @@ from caveclient import CAVEclient
 from matplotlib.collections import LineCollection
 
 # %%
-from eyewire2_functional_analysis import data_loader, neuroglancer, registration
-from eyewire2_functional_analysis.plot import plot_em_axis_indicator
-from eyewire2_functional_analysis.space_mapping import align_and_place_skel
+from eyewire2_functional_analysis import data_loader, neuroglancer, registration, plot_morph, space_mapping
 
 df_fields = data_loader.load_df_fields()
 df_outline = data_loader.load_df_outline()
@@ -145,7 +143,7 @@ reg = registration.load_registration(REG_FILE)
 example_colors = dict(zip(example_rows, ['C1', 'C2', 'C3']))
 
 for label, row in example_rows.items():
-    skel = align_and_place_skel(
+    skel = space_mapping.align_and_place_skel(
         row.skel, reg, field=row['field'],
         target_xy=(row['temporal_nasal_pos_um'], row['ventral_dorsal_pos_um']),
     )
@@ -172,7 +170,7 @@ AXIS_LEN_UM = 200
 box_center = (np.mean(box_xlim), np.mean(box_ylim))
 
 for ax in axs_all[1, :]:
-    plot_em_axis_indicator(ax, reg, field=None, direction='em_to_2p', center=box_center, scale=AXIS_LEN_UM)
+    plot_morph.plot_em_axis_indicator(ax, reg, field=None, direction='em_to_2p', center=box_center, scale=AXIS_LEN_UM)
 
 plt.savefig(os.path.join(fig_dir, 'retinal_field_locations.pdf'))
 plt.show()

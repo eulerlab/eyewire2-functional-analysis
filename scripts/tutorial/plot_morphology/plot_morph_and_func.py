@@ -24,7 +24,7 @@ import numpy as np
 import seaborn as sns
 
 # %%
-from eyewire2_functional_analysis import data_loader, registration
+from eyewire2_functional_analysis import data_loader, registration, plot_traces, plot_utils
 
 df_rois, df_fields, df_outline = data_loader.load_all_dfs()
 df = data_loader.load_df_rois_morph(df_rois=df_rois)
@@ -44,7 +44,7 @@ plt.savefig(os.path.join(FIG_DIR, 'cell_type_counts.pdf'))
 plt.show()
 
 # %%
-from eyewire2_functional_analysis import plot
+from eyewire2_functional_analysis import plot_morph
 
 import skeliner as sk
 
@@ -85,29 +85,29 @@ def plot_cells(df, reg):
 
         sk.plot.projection(skel_rot,
                            ax=ax, xlim=global_xlim, ylim=global_ylim, plane='xy', draw_cylinders=False)
-        plot.plot_scale_bar(ax=ax, x0=global_xlim[0] + 5, y0=np.mean(global_ylim),
+        plot_utils.plot_scale_bar(ax=ax, x0=global_xlim[0] + 5, y0=np.mean(global_ylim),
                             size=100, text=False, unit='µm', tdist=0, orientation='v')
-        plot.plot_em_axis_indicator(ax, reg, field=row['field'], direction='em_to_2p',
+        plot_morph.plot_em_axis_indicator(ax, reg, field=row['field'], direction='em_to_2p',
                                     center=(0, 0), lw=1, labels=('', ''))
         ax.set_rasterized(True)
 
         ax = axs[i, 1]
-        plot.plot_ipl_profile(ax=ax, row=row)
+        plot_morph.plot_ipl_profile(ax=ax, row=row)
 
         ax = axs[i, 2]
-        plot.plot_chirp(ax=ax, row=row)
+        plot_traces.plot_chirp(ax=ax, row=row)
         if i == (df.shape[0] - 1):
-            plot.plot_scale_bar(ax=ax, x0=1, y0=-0.4, size=2, text=True, tdist=0.05, unit='s')
+            plot_utils.plot_scale_bar(ax=ax, x0=1, y0=-0.4, size=2, text=True, tdist=0.05, unit='s')
         ax.set_ylim(-0.5, +1.1)
 
         ax = axs[i, 3]
-        plot.plot_bar(ax=ax, row=row, annotate_dirs=False, annotate_symbols=i == 0, ventral_up=False)
+        plot_traces.plot_bar(ax=ax, row=row, annotate_dirs=False, annotate_symbols=i == 0, ventral_up=False)
         if i == (df.shape[0] - 1):
-            plot.plot_scale_bar(ax=ax, x0=1, y0=-0.4, size=2, text=True, tdist=0.05, unit='s')
+            plot_utils.plot_scale_bar(ax=ax, x0=1, y0=-0.4, size=2, text=True, tdist=0.05, unit='s')
         ax.set_ylim(-0.5, +1.1)
 
         ax = axs[i, 4]
-        plot.plot_bar_dir(ax=ax, row=row, ventral_up=False)
+        plot_traces.plot_bar_dir(ax=ax, row=row, ventral_up=False)
 
     for ax in axs[:, :-1].flat:
         ax.set(xlabel=None, ylabel=None, xticks=[], yticks=[])

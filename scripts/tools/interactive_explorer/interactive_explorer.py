@@ -35,11 +35,15 @@
 
 # %%
 import os
+import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import panel as pn
 import plotly.graph_objects as go
+from matplotlib.patches import Patch, Rectangle
+from matplotlib.ticker import FuncFormatter
 
 from eyewire2_functional_analysis import data_loader, plot_morph, plot_traces, registration
 from eyewire2_functional_analysis.space_mapping import align_and_place_skel
@@ -71,10 +75,13 @@ reg = registration.load_registration(REG_FILE)
 df['label'] = df.apply(lambda r: f"{r['field']} - ROI {r['roi_id']}\n{r['Cell Type']}", axis=1)
 
 # Fixed XY range for the cell-picker scatter, from the ROI cloud alone (with
-# some padding) -- kept constant regardless of which cell's skeleton is
-# overlaid, so a large skeleton gets cropped rather than the view zooming out.
-_x_pad = 0.1 * (df['temporal_nasal_pos_um'].max() - df['temporal_nasal_pos_um'].min())
-_y_pad = 0.1 * (df['ventral_dorsal_pos_um'].max() - df['ventral_dorsal_pos_um'].min())
+# some padding, plus a fixed extra margin so there's room to see e.g. a
+# stimulus footprint extending past the ROI cloud) -- kept constant regardless
+# of which cell's skeleton is overlaid, so a large skeleton gets cropped
+# rather than the view zooming out.
+ZOOM_OUT_MARGIN_UM = 200
+_x_pad = 0.1 * (df['temporal_nasal_pos_um'].max() - df['temporal_nasal_pos_um'].min()) + ZOOM_OUT_MARGIN_UM
+_y_pad = 0.1 * (df['ventral_dorsal_pos_um'].max() - df['ventral_dorsal_pos_um'].min()) + ZOOM_OUT_MARGIN_UM
 X_RANGE = (df['temporal_nasal_pos_um'].min() - _x_pad, df['temporal_nasal_pos_um'].max() + _x_pad)
 Y_RANGE = (df['ventral_dorsal_pos_um'].min() - _y_pad, df['ventral_dorsal_pos_um'].max() + _y_pad)
 
@@ -85,7 +92,6 @@ MORPH_MARGIN_UM = 10
 MORPH_MIN_RAD_UM = MORPH_SCALE_BAR_UM / 2 + MORPH_MARGIN_UM
 
 FIELDS = sorted(df['field'].unique())
-
 # %% [markdown]
 # ## Stimulus footprint overlay
 #
@@ -197,9 +203,11 @@ def skel_edge_trace(row):
                        hoverinfo='skip', showlegend=False)
 
 
-def make_scatter_figure(selected_idx=None, stim_type='Chirp'):
+def make_scatter_figure(selected_idx=None, stim_type='Chirp', field=None):
     """Build the XY cell-picker scatter, highlighting `selected_idx`, overlaying its skeleton, and
-    drawing `stim_type`'s footprint at the selected ROI's field centre.
+    drawing `stim_type`'s footprint at `field`'s centre (defaulting to `selected_idx`'s own field,
+    or `FIELDS[0]` if neither is given -- used when the timeline tab has a field active but no ROI
+    selected).
 
     Always emits exactly 4 traces (ROI dots, skeleton, stimulus footprint,
     bar-direction outlines -- empty traces when there's nothing to overlay)
@@ -230,7 +238,8 @@ def make_scatter_figure(selected_idx=None, stim_type='Chirp'):
     else:
         skel_trace = empty_line_trace()
 
-    field = row['field'] if row is not None else FIELDS[0]
+    if field is None:
+        field = row['field'] if row is not None else FIELDS[0]
     stim_footprint_trace = stimulus_trace(stim_type, field)
     bar_dir_trace = bar_direction_trace(field) if stim_type == 'DS' else empty_line_trace()
 
@@ -377,4 +386,497 @@ stim_dropdown.param.watch(on_stim_change, 'value')
 scatter_pane.param.watch(on_scatter_click, 'click_data')
 
 layout = pn.Row(pn.Column(scatter_pane, field_dropdown, roi_dropdown, stim_dropdown), detail_pane)
-layout.servable()
+
+# %% [markdown]
+# ## Stimulus-timeline tab
+#
+# A second view: scrub absolute session time and see the ROI traces recorded
+# at that instant (heatmap), the field/stimulus footprint that was on screen
+# at that instant (reusing `make_scatter_figure` from above), and that
+# field's cells -- individually selectable, independent of the timeline.
+#
+# Session timing comes from `experiment-overview_consolidated.csv` (same
+# file used in `scripts/analysis/light_exposure/EW2_stim_history.py`). Each
+# field's chirp/moving-bar/mouse-cam recording is its own acquisition with an
+# independent local clock (`*_pp_trace_t0`/`*_pp_trace_dt`) -- there is no
+# single continuous trace spanning the whole session, so time outside the
+# currently active recording block (a field switch, a setup gap, or -- for
+# GCL3's Chirp, which was recorded twice -- the second of the two logged
+# presentations, since only one of them made it into the released
+# `chirp_trace`) is treated as "nothing recorded" rather than an error.
+
+# %%
+HEATMAP_PRE_S = 5.0
+HEATMAP_POST_S = 15.0
+
+STIM_LABELS = {v: k for k, v in STIM_OPTIONS.items()}
+STIM_TRACE_PREFIX = {'DS': 'bar', 'Chirp': 'chirp', 'MouseCam_Right': 'mc'}
+
+CONSOL_PATH = os.path.join(data_loader.DATA_ROOT, 'experiment-overview_consolidated.csv')
+df_stim_log = pd.read_csv(CONSOL_PATH, sep=';', on_bad_lines='warn')
+
+
+def build_session_blocks():
+    """One entry per (field, stim type) recording block: the earliest logged presentation
+    that actually has a recording file, with its real duration taken from the matching
+    `*_pp_trace` array length (the logged `t_dur_s` can be shorter than what's actually
+    in the trace -- e.g. GCL3's Chirp block runs ~181 s of trace vs. 165 s logged).
+    """
+    blocks = []
+    for field in FIELDS:
+        field_idx = int(field[3:])
+        rep_row = df[df['field'] == field].iloc[0]
+        for stim_type, col_prefix in STIM_TRACE_PREFIX.items():
+            candidates = df_stim_log[
+                (df_stim_log['fieldID'] == field_idx)
+                & (df_stim_log['stimFileName'] == stim_type)
+                & (df_stim_log['dataFileName'].notna())
+            ]
+            if not len(candidates):
+                continue
+            pick = candidates.loc[candidates['t_abs_s'].idxmin()]
+            trace_dt = rep_row[f'{col_prefix}_pp_trace_dt']
+            n_samples = len(rep_row[f'{col_prefix}_pp_trace'])
+
+            if col_prefix == 'mc':
+                triggertimes = rep_row['mc_triggertimes']
+            else:
+                triggertimes = rep_row[f'{col_prefix}_triggertimes_snippets']
+            blocks.append(dict(
+                field=field, stim_type=stim_type, col_prefix=col_prefix,
+                t_start=float(pick['t_abs_s']), t_end=float(pick['t_abs_s']) + n_samples * trace_dt,
+                triggertimes=triggertimes,
+            ))
+    return sorted(blocks, key=lambda b: b['t_start'])
+
+
+SESSION_BLOCKS = build_session_blocks()
+SESSION_T_MIN = SESSION_BLOCKS[0]['t_start']
+SESSION_T_MAX = SESSION_BLOCKS[-1]['t_end']
+
+
+def active_block_at(t):
+    """The session block (field + stim type) recording at absolute time `t`, or `None`
+    if `t` falls between recordings (field switch / setup gap)."""
+    for block in SESSION_BLOCKS:
+        if block['t_start'] <= t < block['t_end']:
+            return block
+    return None
+
+
+# Fixed, shared color scale for the heatmap (99th percentile magnitude across all pp
+# traces, symmetric around 0) so the colors don't rescale/jump every time the slider moves.
+_all_pp_vals = np.concatenate([
+    np.concatenate(df[f'{p}_pp_trace'].apply(np.asarray).values) for p in STIM_TRACE_PREFIX.values()
+])
+HEATMAP_VMAX = np.nanpercentile(np.abs(_all_pp_vals), 99)
+HEATMAP_VMIN = -HEATMAP_VMAX
+
+
+# Canonical stimulus movies (same file for every presentation of that stim type -- a
+# Chirp/DS presentation always shows the same movie, just positioned differently per field,
+# which is already handled by the footprint overlay in the scatter panel). Mouse-cam has no
+# single canonical movie: each field was shown a different one of 20 pre-shuffled sequences,
+# recorded in `df`'s own `mc` column (e.g. `"mc16"` -> sequence 16).
+STIM_MOVIE_NPZ = {
+    'Chirp': ('global_chirp', 'chirp1000_setup3_movie_and_trigger.npz'),
+    'DS': ('moving_bar', 'DS_setup3_movie_and_trigger.npz'),
+}
+MC_ARRAY_DIR = os.path.join(data_loader.DATA_ROOT, 'stimuli', 'mouse_cam_movies', 'mc_arrays')
+MC_FRAME_RATE_HZ = 30.0  # matches stimulus_tools.FRAMES_PER_SECOND
+
+_stim_npz_cache = {}
+_mc_movie_cache = {}
+
+
+def load_stim_movie_npz(stim_type):
+    """(time, intensity) for `stim_type`'s canonical movie -- `intensity` has shape (T, 1),
+    the frame mean at each `time` sample. Loaded once per stim type, then cached.
+
+    Valid as a literal field-mean intensity for Chirp (a full-field spot). For DS it's a
+    coarser proxy -- the bar only covers part of the field at any instant -- but the bar's
+    actual footprint/position is already drawn separately in the scatter panel, so this is
+    just meant to show *when* stimulation happens, not *where*.
+    """
+    if stim_type not in _stim_npz_cache:
+        subdir, fname = STIM_MOVIE_NPZ[stim_type]
+        movie = np.load(os.path.join(data_loader.DATA_ROOT, 'stimuli', subdir, fname))
+        trigger = movie['trigger']
+        trigger0 = np.argmax(trigger) # Start stimulus at first trigger
+        intensity = movie['stimulus'].mean(axis=(1, 2))[trigger0:, None]
+        _stim_npz_cache[stim_type] = (movie['time'], intensity)
+    return _stim_npz_cache[stim_type]
+
+
+def load_mc_movie(field):
+    """(time, intensity) for `field`'s actual mouse-cam sequence -- `intensity` has shape
+    (T, 2), the frame mean of the [Green, UV] channels at each `time` sample.
+
+    `MC{n}.npy` (`data/stimuli/mouse_cam_movies/mc_to_numpy.py`) was built with
+    `color_sequence='BGR'`, which merges the source montage's own (R, G, B) into an "RGB"-mode
+    image as (B, G, R) -- so in the saved array, index 0 ("R" slot) holds the source's *blue*
+    channel, index 1 ("G" slot) is the source's green channel unchanged, and index 2 ("B" slot)
+    holds the source's *red* channel. Empirically (checked on MC15), index 0 is near-blank
+    (mean ~2.5, std ~5.7) -- consistent with it being the setup's unused "red" channel -- while
+    indices 1 and 2 both carry real structured content (mean ~85-90, std ~80-95), i.e. Green
+    and UV respectively. So the real channels are 1 (Green) and 2 (UV); index 0 is dropped.
+
+    Loaded once per distinct sequence (there are only 5, one per field, some repeated), then cached.
+    """
+    seq = int(df.loc[df['field'] == field, 'mc'].iloc[0][2:])  # "mc16" -> 16
+    if seq not in _mc_movie_cache:
+        arr = np.load(os.path.join(MC_ARRAY_DIR, f'MC{seq}.npy'), mmap_mode='r')
+        intensity = np.asarray(arr[:, :, :, 1:3].mean(axis=(1, 2)), dtype=np.float64)  # [Green, UV]
+        time = np.arange(arr.shape[0]) / MC_FRAME_RATE_HZ
+        _mc_movie_cache[seq] = (time, intensity)
+    return _mc_movie_cache[seq]
+
+
+def stim_intensity_trace(block, t_center):
+    """(t_rel, intensity, channel_labels) -- mean stimulus intensity around `t_center`.
+
+    Aligned by treating the movie's own time 0 as `block['t_start']` (the presentation's
+    logged absolute start) -- the same anchor `heatmap_matrix` uses for the raw pp traces.
+    Cross-checked against both movies' own trigger arrays: each movie's first trigger falls
+    within ~0.03 s of its own t=0 for Chirp (full pre-roll before the sweep starts is part of
+    the DS movie itself, not a misalignment), consistent with the <=0.13 s `*_pp_trace_t0`
+    pre-roll already seen on the raw traces -- so this approximation is accurate to well
+    under one heatmap sample (`dt` ~0.128 s).
+
+    Chirp/DS's canonical movie is only a single repeat (~33 s / ~36 s) while the recorded
+    block covers all of its repeats back-to-back (5x / 3x, ~181 s / ~118 s) -- so within the
+    block, time is wrapped onto one repeat's cycle (`% movie_duration`) rather than indexed
+    directly; outside the block's own start/end (a different presentation, or a gap) the
+    result is blanked to NaN, same as `heatmap_matrix`.
+    """
+    if block['stim_type'] in STIM_MOVIE_NPZ:
+        time, intensity = load_stim_movie_npz(block['stim_type'])
+        labels = ['Intensity']
+    else:
+        time, intensity = load_mc_movie(block['field'])
+        labels = ['Green', 'UV']
+
+    dt_movie = time[1] - time[0]
+    movie_duration = time[-1] + dt_movie
+    t_rel = np.arange(-HEATMAP_PRE_S, HEATMAP_POST_S, dt_movie)
+    t_abs = t_center + t_rel
+
+    t0_stim = block['t_start'] + block['triggertimes'].flat[0]
+
+    t_local = (t_abs - t0_stim) % movie_duration
+    idx = np.clip(np.round(t_local / dt_movie).astype(int), 0, len(time) - 1)
+
+    out = np.full((len(t_rel), intensity.shape[1]), np.nan)
+    valid = (t_abs >= t0_stim) & (t_abs < block['t_end'])
+    out[valid] = intensity[idx[valid]]
+    return t_rel, out, labels
+
+
+def heatmap_matrix(block, t_center):
+    """(t_rel, matrix, sub) -- ROI x time matrix of `block`'s pp trace around `t_center`.
+
+    `matrix[i]` is `sub.iloc[i]`'s trace resampled onto the common `t_rel` grid
+    (`-HEATMAP_PRE_S`..`+HEATMAP_POST_S` relative to `t_center`); samples that fall
+    outside `block`'s own recorded span are left as NaN. `sub` keeps `df`'s own row
+    labels (not reset), so a global ROI index can be located in it via `sub.index.get_loc`.
+    """
+    sub = df[df['field'] == block['field']].sort_values('roi_id')
+    col_prefix = block['col_prefix']
+    dt = sub[f'{col_prefix}_pp_trace_dt'].iloc[0]
+    t_rel = np.arange(-HEATMAP_PRE_S, HEATMAP_POST_S, dt)
+    t_abs = t_center + t_rel
+
+    mat = np.full((len(sub), len(t_rel)), np.nan)
+    for i, (_, row) in enumerate(sub.iterrows()):
+        trace = row[f'{col_prefix}_pp_trace']
+        trace_dt = row[f'{col_prefix}_pp_trace_dt']
+        trace_t0 = row[f'{col_prefix}_pp_trace_t0']
+        idx = np.round((t_abs - block['t_start'] - trace_t0) / trace_dt).astype(int)
+        valid = (idx >= 0) & (idx < len(trace))
+        mat[i, valid] = trace[idx[valid]]
+    return t_rel, mat, sub
+
+
+def render_heatmap(t, selected_idx=None):
+    """Figure for the block active at `t` (or a placeholder if none): field-mean stimulus
+    intensity (top), the selected ROI's own trace (middle, if any), and the full ROI x time
+    heatmap (bottom) with `selected_idx`'s row outlined -- all three sharing one time axis.
+
+    The heatmap's colorbar lives in its own gridspec column so it only shrinks the bottom
+    panel's *colorbar column* rather than stealing width from the panel itself -- otherwise
+    the top two panels (which have no colorbar) end up wider than the heatmap and the shared
+    time axis visually misaligns between them.
+    """
+    block = active_block_at(t)
+    if block is None:
+        fig, ax = plt.subplots(figsize=(6.5, 5))
+        ax.text(0.5, 0.5, 'No recording active at this time\n(field switch / setup gap)',
+                ha='center', va='center', wrap=True)
+        ax.axis('off')
+        return fig
+
+    fig = plt.figure(figsize=(6.5, 7.5))
+    gs = fig.add_gridspec(3, 2, height_ratios=(1, 1, 4), width_ratios=(1, 0.03), hspace=0.15, wspace=0.05)
+    ax_stim = fig.add_subplot(gs[0, 0])
+    ax_trace = fig.add_subplot(gs[1, 0], sharex=ax_stim)
+    ax = fig.add_subplot(gs[2, 0], sharex=ax_stim)
+    cax = fig.add_subplot(gs[2, 1])
+
+    t_rel, mat, sub = heatmap_matrix(block, t)
+    im = ax.imshow(mat, aspect='auto', origin='lower', cmap='RdBu_r',
+                    vmin=HEATMAP_VMIN, vmax=HEATMAP_VMAX, interpolation='none',
+                    extent=(t_rel[0], t_rel[-1], -0.5, len(sub) - 0.5))
+    ax.axvline(0, color='black', lw=1, ls='--')
+    ax.set_xlabel(f'Time relative to t = {t:.1f} s [s]')
+    ax.set_ylabel('ROI')
+    step = max(1, len(sub) // 15)
+    ax.set_yticks(range(0, len(sub), step))
+    ax.set_yticklabels(sub['roi_id'].iloc[::step])
+    fig.colorbar(im, cax=cax, label='Norm. Ca. (pp trace)')
+
+    if selected_idx is not None and selected_idx in sub.index:
+        pos = sub.index.get_loc(selected_idx)
+        ax.add_patch(Rectangle((t_rel[0], pos - 0.5), t_rel[-1] - t_rel[0], 1,
+                                fill=False, edgecolor='lime', linewidth=2, zorder=5))
+        ax_trace.plot(t_rel, mat[pos], color='#1a7a1a', lw=1.2)
+        ax_trace.set_ylabel(f"ROI {sub.loc[selected_idx, 'roi_id']}")
+    else:
+        ax_trace.text(0.5, 0.5, 'No cell selected', ha='center', va='center', transform=ax_trace.transAxes)
+        ax_trace.set_ylabel('Selected\nROI')
+    ax_trace.axvline(0, color='black', lw=1, ls='--')
+    ax_trace.tick_params(labelbottom=False)
+
+    stim_t_rel, stim_intensity, stim_labels = stim_intensity_trace(block, t)
+    stim_colors = {'Intensity': 'black', 'UV': 'purple', 'Green': 'green'}
+    for ch, label in enumerate(stim_labels):
+        ax_stim.plot(stim_t_rel, stim_intensity[:, ch], color=stim_colors[label], lw=1, label=label)
+    ax_stim.axvline(0, color='black', lw=1, ls='--')
+    ax_stim.set_ylabel('Stimulus\nintensity')
+    ax_stim.set_title(f"{block['field']} – {STIM_LABELS[block['stim_type']]}")
+    if len(stim_labels) > 1:
+        ax_stim.legend(loc='upper right', fontsize=7, frameon=False, handlelength=1.2)
+    ax_stim.tick_params(labelbottom=False)
+
+    with warnings.catch_warnings():
+        # tight_layout warns that the manually-added `cax` (not created via the ax=
+        # convenience path) is "not compatible" -- checked empirically that the three main
+        # panels still end up with identical x0/x1 regardless, so the warning is benign.
+        warnings.simplefilter('ignore', UserWarning)
+        fig.tight_layout()
+    return fig
+
+
+def render_morph_only(idx):
+    """Standalone EM-skeleton-on-morphology panel for row `idx` (no chirp/bar/mc detail plots),
+    or a placeholder if `idx` is `None` (no cell selected)."""
+    fig, ax = plt.subplots(figsize=(4, 4))
+    if idx is None:
+        ax.text(0.5, 0.5, 'No cell selected', ha='center', va='center')
+        ax.axis('off')
+        fig.tight_layout()
+        return fig
+
+    row = df.iloc[idx]
+    if row['skel'] is not None:
+        plot_morph.plot_morph(ax, row, reg=reg, rad=None, min_rad=MORPH_MIN_RAD_UM, margin=MORPH_MARGIN_UM,
+                        scale_bar_um=MORPH_SCALE_BAR_UM, annotate_orientation=True)
+    else:
+        ax.text(0.5, 0.5, f"no skeleton found for {row['Latest SegID']}", ha='center', va='center', wrap=True)
+        ax.axis('off')
+    ax.set_title(row['label'])
+    fig.tight_layout()
+    return fig
+
+
+def tl_roi_options_for_field(field):
+    """Like `roi_options_for_field`, but with a leading "None" entry -- the timeline tab
+    defaults to no cell selected (rather than auto-picking one) whenever the slider moves
+    into a new field, so the ROI panel/morphology panel only show a specific cell once the
+    user actually asks for one."""
+    return {'None': None, **roi_options_for_field(field)}
+
+
+# %% [markdown]
+# ### Session map
+#
+# The slider alone gives no sense of *where* the actual recordings are along an ~8300 s
+# session -- this draws every block as a colored segment (color = stim type), highlights the
+# gaps between them (field switches / setup time), labels each field, and marks the current
+# slider position, so scrubbing has visual context instead of blind guess-and-search.
+
+# %%
+STIM_TYPE_COLORS = {'Chirp': '#4c72b0', 'DS': '#dd8452', 'MouseCam_Right': '#55a868'}
+
+
+def format_hms(seconds):
+    """"H:MM:SS" (or "M:SS" under an hour) for a session-absolute time in seconds."""
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+SESSION_MAP_FIGSIZE = (9, 1.3)
+SESSION_MAP_DPI = 100
+SESSION_MAP_WIDTH_PX = SESSION_MAP_FIGSIZE[0] * SESSION_MAP_DPI  # matches the slider's own width, below
+
+
+def render_session_map(t):
+    """Horizontal map of the whole session (see markdown above), with a vertical marker at `t`."""
+    fig, ax = plt.subplots(figsize=SESSION_MAP_FIGSIZE, dpi=SESSION_MAP_DPI)
+
+    for block in SESSION_BLOCKS:
+        ax.broken_barh([(block['t_start'], block['t_end'] - block['t_start'])], (0, 1),
+                        facecolors=STIM_TYPE_COLORS[block['stim_type']], edgecolor='white', linewidth=0.5)
+
+    for prev, nxt in zip(SESSION_BLOCKS[:-1], SESSION_BLOCKS[1:]):
+        gap = nxt['t_start'] - prev['t_end']
+        if gap > 0:
+            ax.broken_barh([(prev['t_end'], gap)], (0, 1), facecolors='none', edgecolor='0.5',
+                            hatch='///', linewidth=0.5)
+
+    for field in FIELDS:
+        field_blocks = [b for b in SESSION_BLOCKS if b['field'] == field]
+        mid = (field_blocks[0]['t_start'] + field_blocks[-1]['t_end']) / 2
+        ax.text(mid, 1.1, field, ha='center', va='bottom', fontsize=8)
+
+    ax.axvline(t, color='black', lw=2, zorder=5)
+    ax.set_xlim(SESSION_T_MIN - 30, SESSION_T_MAX + 30)
+    ax.set_ylim(0, 1.4)
+    ax.set_yticks([])
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda val, pos: format_hms(val)))
+    ax.set_xlabel('Session time [h:mm:ss]')
+    for spine in ('top', 'left', 'right'):
+        ax.spines[spine].set_visible(False)
+
+    legend_handles = [Patch(facecolor=STIM_TYPE_COLORS[s], label=STIM_LABELS[s]) for s in STIM_TYPE_COLORS]
+    legend_handles.append(Patch(facecolor='none', edgecolor='0.5', hatch='///', label='gap / setup'))
+    ax.legend(handles=legend_handles, loc='upper center', bbox_to_anchor=(0.5, -0.6),
+              ncol=4, frameon=False, fontsize=7, handlelength=1.2)
+
+    fig.tight_layout()
+    return fig
+
+
+# %%
+_initial_block = active_block_at(SESSION_T_MIN)
+assert _initial_block is not None, f"no recording block found at session start ({SESSION_T_MIN:.1f} s)"
+tl_state = dict(field=_initial_block['field'], stim_type=_initial_block['stim_type'])
+
+time_slider = pn.widgets.FloatSlider(
+    name='Session time [s]', start=SESSION_T_MIN, end=SESSION_T_MAX, step=1.0, value=SESSION_T_MIN,
+    width=SESSION_MAP_WIDTH_PX,
+)
+JUMP_OPTIONS = {
+    f"{b['field']} – {STIM_LABELS[b['stim_type']]}  ({format_hms(b['t_start'] + b['triggertimes'].flat[0])})": b['t_start'] + b['triggertimes'].flat[0]
+    for b in SESSION_BLOCKS
+}
+jump_dropdown = pn.widgets.Select(name='Jump to recording', options=JUMP_OPTIONS, value=SESSION_T_MIN)
+tl_status = pn.pane.Markdown(f"**t = {SESSION_T_MIN:.1f} s** – {tl_state['field']}, {STIM_LABELS[tl_state['stim_type']]}")
+tl_roi_dropdown = pn.widgets.Select(name='ROI', options=tl_roi_options_for_field(tl_state['field']), value=None)
+
+session_map_pane = pn.pane.Matplotlib(render_session_map(time_slider.value), tight=True, format='png',
+                                       dpi=SESSION_MAP_DPI, width=SESSION_MAP_WIDTH_PX)
+heatmap_pane = pn.pane.Matplotlib(render_heatmap(time_slider.value, selected_idx=tl_roi_dropdown.value),
+                                   tight=True, format='png', dpi=100)
+tl_scatter_pane = pn.pane.Plotly(
+    make_scatter_figure(selected_idx=tl_roi_dropdown.value, stim_type=tl_state['stim_type'], field=tl_state['field']))
+tl_morph_pane = pn.pane.Matplotlib(render_morph_only(tl_roi_dropdown.value), tight=True, format='png', dpi=100)
+
+
+def redraw_tl_scatter(idx):
+    tl_scatter_pane.object = make_scatter_figure(
+        selected_idx=idx, stim_type=tl_state['stim_type'], field=tl_state['field'])
+
+
+def redraw_tl_morph(idx):
+    old_fig = tl_morph_pane.object
+    tl_morph_pane.object = render_morph_only(idx)
+    plt.close(old_fig)
+
+
+def redraw_tl_heatmap():
+    old_fig = heatmap_pane.object
+    heatmap_pane.object = render_heatmap(time_slider.value, selected_idx=tl_roi_dropdown.value)
+    plt.close(old_fig)
+
+
+def redraw_session_map():
+    old_fig = session_map_pane.object
+    session_map_pane.object = render_session_map(time_slider.value)
+    plt.close(old_fig)
+
+
+def on_tl_roi_change(event):
+    redraw_tl_scatter(event.new)
+    redraw_tl_morph(event.new)
+    redraw_tl_heatmap()
+
+
+def on_tl_scatter_click(event):
+    """Same click-to-select as the main tab's scatter, except a click on a ROI outside
+    the field currently active on the timeline is ignored -- field here always follows
+    the slider, not the click."""
+    click_data = event.new
+    tl_scatter_pane.click_data = None  # reset so a stale replay of this event is a no-op
+    if not click_data or not click_data.get('points'):
+        return
+    point = click_data['points'][0]
+    if point.get('curveNumber', 0) != 0:
+        return  # ignore clicks on the skeleton/stimulus-overlay traces
+    idx = point.get('pointIndex', point.get('pointNumber'))
+    if df.iloc[idx]['field'] != tl_state['field']:
+        return
+    tl_roi_dropdown.value = idx  # triggers on_tl_roi_change above
+
+
+def on_time_slider_change(event):
+    t = event.new
+    block = active_block_at(t)
+
+    if block is None:
+        tl_status.object = f"**t = {t:.1f} s** – no recording active (field switch / setup gap)"
+    else:
+        tl_status.object = f"**t = {t:.1f} s** – {block['field']}, {STIM_LABELS[block['stim_type']]}"
+        if block['field'] != tl_state['field']:
+            tl_state['field'] = block['field']
+            tl_state['stim_type'] = block['stim_type']
+            options = tl_roi_options_for_field(block['field'])
+            # Reset to "None" (no auto-selected cell) on every field change. Also redraw
+            # explicitly right after: if the dropdown's value was already `None` (no ROI had
+            # been selected), this update is a value no-op and won't itself fire
+            # `on_tl_roi_change`, so the scatter/morph wouldn't otherwise pick up the new field.
+            tl_roi_dropdown.param.update(options=options, value=None)
+            redraw_tl_scatter(None)
+            redraw_tl_morph(None)
+        else:
+            tl_state['stim_type'] = block['stim_type']
+            redraw_tl_scatter(tl_roi_dropdown.value)  # same ROI selection, new stim overlay
+
+    redraw_tl_heatmap()
+    redraw_session_map()
+
+
+def on_jump_change(event):
+    time_slider.value = event.new  # triggers on_time_slider_change above
+
+
+tl_roi_dropdown.param.watch(on_tl_roi_change, 'value')
+tl_scatter_pane.param.watch(on_tl_scatter_click, 'click_data')
+time_slider.param.watch(on_time_slider_change, 'value')
+jump_dropdown.param.watch(on_jump_change, 'value')
+
+timeline_layout = pn.Column(
+    session_map_pane,
+    time_slider,
+    jump_dropdown,
+    tl_status,
+    pn.Row(
+        heatmap_pane,
+        pn.Column(tl_scatter_pane, tl_roi_dropdown),
+        tl_morph_pane,
+    ),
+)
+
+# %%
+app = pn.Tabs(('Cell explorer', layout), ('Stimulus timeline', timeline_layout))
+app.servable()

@@ -6,7 +6,6 @@ __pycache__/
 # Files
 !*/README.md
 data/data-2p
-data/stimuli
 *.pickle
 *.pkl
 *.png
@@ -116,3 +115,10 @@ ENV/
 # PyCharm Files
 .idea/
 *events.
+
+
+# Files
+*.npz
+*.npy
+*.pkl
+*.pickle

@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 
 # Files
-!*/README.md
 data/data-2p
 
 *.pickle
@@ -127,3 +126,4 @@ ENV/
 # Add file exceptions here
 !data/stimuli/global_chirp/chirp1000_setup3_movie_and_trigger.npz
 !data/stimuli/moving_bar/DS_setup3_movie_and_trigger.npz
+!*/README.md

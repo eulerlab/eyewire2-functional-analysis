@@ -21,6 +21,21 @@ DIR_GRID_LAYOUT = ((0, 0, 7), (0, 1, 0), (0, 2, 1),
                     (2, 0, 5), (2, 1, 4), (2, 2, 3))
 
 
+def get_repeat_colors(n_repeats, cmap='viridis', color_range=(0.15, 0.85)):
+    """Colour for each repeat index, as used by `plot_snippets_and_average` -- exposed separately
+    so callers (e.g. a colorbar legend keyed by repeat number) can reproduce the exact same mapping.
+
+    Args:
+        n_repeats: Number of repeats to generate colours for.
+        cmap: Colormap name.
+        color_range: ``(low, high)`` fraction of `cmap` to sample from.
+
+    Returns:
+        numpy.ndarray: Array of shape ``(n_repeats, 4)`` RGBA colours, indexed by repeat.
+    """
+    return plt.get_cmap(cmap)(np.linspace(*color_range, n_repeats))
+
+
 def plot_mean_and_sd(ax, traces, time, color='black', alt_color='dimgray', facealpha=0.2, offset=0.0):
     """Plot the mean of multiple traces with a shaded ±1 SD band.
 
@@ -99,7 +114,7 @@ def plot_snippets_and_average(
     """
     snippets = np.asarray(snippets)
     n_repeats = snippets.shape[1]
-    colors = plt.get_cmap(snippet_cmap)(np.linspace(*snippet_color_range, n_repeats))
+    colors = get_repeat_colors(n_repeats, cmap=snippet_cmap, color_range=snippet_color_range)
 
     for i in range(n_repeats):
         ax.plot(time, snippets[:, i], color=colors[i], lw=snippet_lw, alpha=snippet_alpha, clip_on=clip_on)

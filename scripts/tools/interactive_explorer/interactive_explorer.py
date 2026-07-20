@@ -37,6 +37,7 @@
 import os
 import warnings
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -188,6 +189,14 @@ def empty_line_trace():
 # ## Cell picker (scatter + field/ROI/stimulus dropdowns) and detail panel
 
 # %%
+# ROI scatter colour-coding by ground-truth 'Cell Class' (from the master proofread-cell
+# spreadsheet, see data_loader.load_df_rois_morph) -- RGC vs. AC (i.e. dAC, the only two classes
+# populating the ROI-matched data). Anything else (Fragment, missing) falls back to gray.
+CELL_CLASS_COLORS = {'RGC': '#d62728', 'AC': '#1f77b4'}
+CELL_CLASS_DEFAULT_COLOR = '#999999'
+SELECTED_COLOR = 'black'
+
+
 def skel_edge_trace(row):
     """Plotly line trace for `row`'s EM skeleton, rotated+placed into the retinal frame."""
     skel = align_and_place_skel(
@@ -216,10 +225,10 @@ def make_scatter_figure(selected_idx=None, stim_type='Chirp', field=None):
     which when the trace count changes from one selection to the next, which
     was causing stray/delayed click events to resolve against the wrong point.
     """
-    colors = ['steelblue'] * len(df)
+    colors = [CELL_CLASS_COLORS.get(c, CELL_CLASS_DEFAULT_COLOR) for c in df['Cell Class']]
     sizes = [8] * len(df)
     if selected_idx is not None:
-        colors[selected_idx] = 'crimson'
+        colors[selected_idx] = SELECTED_COLOR
         sizes[selected_idx] = 14
 
     roi_trace = go.Scatter(
@@ -256,22 +265,96 @@ def make_scatter_figure(selected_idx=None, stim_type='Chirp', field=None):
     return fig
 
 
-def render_cell(idx):
+# Moving-bar and mouse-cam response snippets always have 3 repeats (confirmed on the released
+# data: `bar_snippets` is always 8 dirs x 3 reps, and `plot_traces.plot_mc_test_snippets` always
+# picks 3 test-clip presentations); `chirp_snippets` varies per row (currently always 5, but the
+# repetition-colorbar logic below stays generic rather than hardcoding that).
+N_MB_REPS = 3
+N_MC_REPS = 3
+
+
+def render_morph_panel(fig, gs_slot, row, correct_by_cellclass=False):
+    """Render `row`'s XY morphology (with its IPL stratification profile alongside, from a
+    precomputed CSV -- see `scripts/preprocessing/compute_ipl_profiles.py` and
+    `data_loader.load_ipl_profile` -- rather than computing it live via `pywarper`, which is
+    slow and depends on an optional native solver for good performance) plus its predicted-type
+    probability bars below (`plot_morph.plot_type_prediction_bars`).
+
+    `correct_by_cellclass` (see `cellclass_correction_dropdown` below) is forwarded to the
+    type-prediction bars: the classifier confuses RGCs and dACs fairly often, and this lets the
+    known ground-truth `Cell Class` override that at all 3 prediction levels.
+
+    Shared by `render_cell` (main tab) and `render_morph_only` (timeline tab) so a cell's
+    morphology panel looks identical in both places.
+    """
+    rows_gs = gs_slot.subgridspec(2, 1, height_ratios=(3, 1), hspace=0.35)
+    morph_gs = rows_gs[0, 0].subgridspec(1, 2, width_ratios=(3, 1), wspace=0.05)
+    ax_morph = fig.add_subplot(morph_gs[0, 0])
+    ax_ipl = fig.add_subplot(morph_gs[0, 1])
+    ax_types = fig.add_subplot(rows_gs[1, 0])
+
+    if row['skel'] is not None:
+        plot_morph.plot_morph(ax_morph, row, reg=reg, rad=None, min_rad=MORPH_MIN_RAD_UM, margin=MORPH_MARGIN_UM,
+                        scale_bar_um=MORPH_SCALE_BAR_UM, annotate_orientation=True)
+        ipl_profile = data_loader.load_ipl_profile(row['Latest SegID'])
+        if ipl_profile is not None:
+            plot_morph.plot_ipl_profile_from_arrays(ax_ipl, ipl_profile['z'].to_numpy(), ipl_profile['dens'].to_numpy())
+        else:
+            # Not yet computed (or failed) -- see scripts/preprocessing/compute_ipl_profiles.py.
+            ax_ipl.text(0.5, 0.5, 'IPL profile\nnot cached', ha='center', va='center', fontsize=7, wrap=True)
+            ax_ipl.axis('off')
+    else:
+        ax_morph.text(0.5, 0.5, f"no skeleton found for {row['Latest SegID']}",
+                      ha='center', va='center', wrap=True)
+        ax_morph.axis('off')
+        ax_ipl.axis('off')
+    ax_morph.set_title(row['label'])
+
+    plot_morph.plot_type_prediction_bars(ax_types, row, correct_by_cellclass=correct_by_cellclass)
+
+    return ax_morph, ax_ipl, ax_types
+
+
+def align_ipl_panel_box(ax_morph, ax_ipl):
+    """Match `ax_ipl`'s vertical box extent to `ax_morph`'s.
+
+    `ax_morph` is drawn with `aspect='equal'` (see `plot_morph.plot_morph`), which -- via
+    matplotlib's default `adjustable='box'` -- shrinks its *rendered* box to enforce that aspect
+    ratio, so it usually ends up shorter than its allotted gridspec slot; `ax_ipl` has no such
+    constraint and fills its slot fully, leaving the two side-by-side panels visually
+    top/bottom-misaligned and differently sized. Must be called after the figure's layout is
+    finalized (e.g. right after `fig.tight_layout()`), since the aspect-driven box shrinking is
+    only resolved at draw time.
+    """
+    morph_pos = ax_morph.get_position()
+    ipl_pos = ax_ipl.get_position()
+    ax_ipl.set_position([ipl_pos.x0, morph_pos.y0, ipl_pos.width, morph_pos.height])
+
+
+def add_rep_colorbar(fig, cax, n_reps, label='Repetition'):
+    """Discrete colorbar in `cax` mapping repeat index -> the colour
+    `plot_traces.plot_snippets_and_average` uses for that repeat (via
+    `plot_traces.get_repeat_colors`), so the repeat-colour code used in the chirp/moving-bar/
+    mouse-cam panels can be read off directly.
+    """
+    colors = plot_traces.get_repeat_colors(n_reps)
+    cmap = mcolors.ListedColormap(colors)
+    norm = mcolors.BoundaryNorm(np.arange(0.5, n_reps + 1.5, 1.0), n_reps)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    cb = fig.colorbar(sm, cax=cax, ticks=np.arange(1, n_reps + 1))
+    cb.set_label(label, fontsize=7)
+    cb.ax.tick_params(labelsize=6)
+    return cb
+
+
+def render_cell(idx, correct_by_cellclass=False):
     """Detail figure for row `idx`: DS-on-morph (left, full height), chirp (top right), mouse-cam snippet (bottom right)."""
     row = df.iloc[idx]
-    fig = plt.figure(figsize=(13, 5))
+    fig = plt.figure(figsize=(14, 5.5))
     try:
-        gs = fig.add_gridspec(2, 3, width_ratios=(1, 1.2, 1.1))
+        gs = fig.add_gridspec(2, 4, width_ratios=(1, 1.2, 1.1, 0.06), wspace=0.5)
 
-        ax_morph = fig.add_subplot(gs[:, 0])
-        if row['skel'] is not None:
-            plot_morph.plot_morph(ax_morph, row, reg=reg, rad=None, min_rad=MORPH_MIN_RAD_UM, margin=MORPH_MARGIN_UM,
-                            scale_bar_um=MORPH_SCALE_BAR_UM, annotate_orientation=True)
-        else:
-            ax_morph.text(0.5, 0.5, f"no skeleton found for {row['Latest SegID']}",
-                          ha='center', va='center', wrap=True)
-            ax_morph.axis('off')
-        ax_morph.set_title(row['label'])
+        ax_morph, ax_ipl, _ = render_morph_panel(fig, gs[:, 0], row, correct_by_cellclass=correct_by_cellclass)
 
         plot_traces.plot_bar_dir_grid(fig, gs[:, 1], row)  # sets its own DSI/OSI suptitle
 
@@ -287,7 +370,22 @@ def render_cell(idx):
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
 
+        # The Chirp and MB/MC colorbars share column 3 -- Chirp's next to `ax_chirp` (top),
+        # MB/MC's next to `ax_mc` (bottom) -- so the two are column-aligned with each other; when
+        # they'd be identical (same repeat count), draw one colorbar spanning both rows instead.
+        n_chirp_reps = row['chirp_snippets'].shape[1]
+        if n_chirp_reps == N_MB_REPS:
+            cax_shared = fig.add_subplot(gs[:, 3])
+            add_rep_colorbar(fig, cax_shared, N_MB_REPS, label='Repetition\n(Chirp, MB, MC)')
+        else:
+            cax_chirp = fig.add_subplot(gs[0, 3])
+            add_rep_colorbar(fig, cax_chirp, n_chirp_reps, label='Repetition\n(Chirp)')
+            cax_mb_mc = fig.add_subplot(gs[1, 3])
+            add_rep_colorbar(fig, cax_mb_mc, N_MB_REPS, label='Repetition\n(MB, MC)')
+
         fig.tight_layout()
+        if row['skel'] is not None:
+            align_ipl_panel_box(ax_morph, ax_ipl)
     except Exception as e:
         fig.clear()
         fig.text(0.5, 0.5, f"Could not plot {row['label']}: {e}", ha='center', va='center')
@@ -305,8 +403,26 @@ field_dropdown = pn.widgets.Select(name='Field', options=FIELDS, value=FIELDS[0]
 roi_dropdown = pn.widgets.Select(name='ROI', options=roi_options_for_field(FIELDS[0]))
 stim_dropdown = pn.widgets.Select(name='Stimulus outline', options=STIM_OPTIONS, value='Chirp')
 
+def make_scatter_legend():
+    """Caption explaining `make_scatter_figure`'s ROI dot colours."""
+    return pn.pane.Markdown(
+        "🔴 RGC&nbsp;&nbsp;&nbsp;🔵 AC (dAC)&nbsp;&nbsp;&nbsp;⚫ selected",
+        styles={'font-size': '11px', 'margin-top': '-8px'},
+    )
+
+
+# The classifier confuses RGCs and dACs fairly often (both are recorded from the ganglion cell
+# layer and driven through the same functional-response pipeline); this toggle applies
+# `baden16_utils.correct_probs_by_cellclass` to zero out/renormalize each cell's predicted-type
+# probabilities to be consistent with its known ground-truth `Cell Class` (RGC vs. AC/dAC).
+# Shared across both tabs so switching it re-renders whichever cell is currently shown in each.
+CELLCLASS_CORRECTION_OPTIONS = {'Raw model prediction': False, 'Corrected by Cell Class (RGC vs. dAC)': True}
+cellclass_correction_dropdown = pn.widgets.Select(name='Predicted type', options=CELLCLASS_CORRECTION_OPTIONS,
+                                                   value=False)
+
 scatter_pane = pn.pane.Plotly(make_scatter_figure(selected_idx=roi_dropdown.value, stim_type=stim_dropdown.value))
-detail_pane = pn.pane.Matplotlib(render_cell(roi_dropdown.value), tight=True, format='png', dpi=100)
+detail_pane = pn.pane.Matplotlib(render_cell(roi_dropdown.value, correct_by_cellclass=cellclass_correction_dropdown.value),
+                                  tight=True, format='png', dpi=100)
 
 
 def select_index(idx):
@@ -323,7 +439,7 @@ def select_index(idx):
     scatter_pane.object = make_scatter_figure(selected_idx=idx, stim_type=stim_dropdown.value)
 
     old_fig = detail_pane.object
-    detail_pane.object = render_cell(idx)
+    detail_pane.object = render_cell(idx, correct_by_cellclass=cellclass_correction_dropdown.value)
     plt.close(old_fig)
 
 
@@ -380,12 +496,21 @@ def on_scatter_click(event):
         roi_dropdown.value = idx  # triggers on_roi_change above
 
 
+def on_cellclass_correction_change(event):
+    """Re-render whichever cell is currently shown in each tab under the new correction setting."""
+    select_index(roi_dropdown.value)
+    if tl_roi_dropdown.value is not None:
+        redraw_tl_morph(tl_roi_dropdown.value)
+
+
 field_dropdown.param.watch(on_field_change, 'value')
 roi_dropdown.param.watch(on_roi_change, 'value')
 stim_dropdown.param.watch(on_stim_change, 'value')
 scatter_pane.param.watch(on_scatter_click, 'click_data')
+cellclass_correction_dropdown.param.watch(on_cellclass_correction_change, 'value')
 
-layout = pn.Row(pn.Column(scatter_pane, field_dropdown, roi_dropdown, stim_dropdown), detail_pane)
+layout = pn.Row(pn.Column(scatter_pane, make_scatter_legend(), field_dropdown, roi_dropdown, stim_dropdown),
+                pn.Column(detail_pane, cellclass_correction_dropdown))
 
 # %% [markdown]
 # ## Stimulus-timeline tab
@@ -636,10 +761,24 @@ def render_heatmap(t, selected_idx=None):
 
     if selected_idx is not None and selected_idx in sub.index:
         pos = sub.index.get_loc(selected_idx)
+        sel_row = sub.loc[selected_idx]
+
+        # Other ROIs of the same morphology type ('Cell Type') recorded in the same field --
+        # drawn first, thin and translucent, so the selected ROI's own trace (below) stays on top.
+        same_type = sub[(sub['Cell Type'] == sel_row['Cell Type']) & (sub.index != selected_idx)]
+        for other_idx in same_type.index:
+            other_pos = sub.index.get_loc(other_idx)
+            ax_trace.plot(t_rel, mat[other_pos], color='#1a7a1a', lw=0.8, alpha=0.5)
+
         ax.add_patch(Rectangle((t_rel[0], pos - 0.5), t_rel[-1] - t_rel[0], 1,
                                 fill=False, edgecolor='lime', linewidth=2, zorder=5))
         ax_trace.plot(t_rel, mat[pos], color='#1a7a1a', lw=1.2)
         ax_trace.set_ylabel(f"ROI {sub.loc[selected_idx, 'roi_id']}")
+        if len(same_type):
+            other_ids = ', '.join(str(rid) for rid in same_type['roi_id'])
+            ax_trace.set_title(f"{sel_row['Cell Type']} -- other ROI(s) in field: {other_ids}", fontsize=7)
+        else:
+            ax_trace.set_title(str(sel_row['Cell Type']), fontsize=7)
     else:
         ax_trace.text(0.5, 0.5, 'No cell selected', ha='center', va='center', transform=ax_trace.transAxes)
         ax_trace.set_ylabel('Selected\nROI')
@@ -666,25 +805,24 @@ def render_heatmap(t, selected_idx=None):
     return fig
 
 
-def render_morph_only(idx):
-    """Standalone EM-skeleton-on-morphology panel for row `idx` (no chirp/bar/mc detail plots),
-    or a placeholder if `idx` is `None` (no cell selected)."""
-    fig, ax = plt.subplots(figsize=(4, 4))
+def render_morph_only(idx, correct_by_cellclass=False):
+    """Standalone morphology panel for row `idx` (EM skeleton + IPL profile + predicted-type bars,
+    via `render_morph_panel`; no chirp/bar/mc detail plots), or a placeholder if `idx` is `None`
+    (no cell selected)."""
+    fig = plt.figure(figsize=(4.5, 5))
     if idx is None:
+        ax = fig.add_subplot(111)
         ax.text(0.5, 0.5, 'No cell selected', ha='center', va='center')
         ax.axis('off')
         fig.tight_layout()
         return fig
 
     row = df.iloc[idx]
-    if row['skel'] is not None:
-        plot_morph.plot_morph(ax, row, reg=reg, rad=None, min_rad=MORPH_MIN_RAD_UM, margin=MORPH_MARGIN_UM,
-                        scale_bar_um=MORPH_SCALE_BAR_UM, annotate_orientation=True)
-    else:
-        ax.text(0.5, 0.5, f"no skeleton found for {row['Latest SegID']}", ha='center', va='center', wrap=True)
-        ax.axis('off')
-    ax.set_title(row['label'])
+    gs = fig.add_gridspec(1, 1)
+    ax_morph, ax_ipl, _ = render_morph_panel(fig, gs[0, 0], row, correct_by_cellclass=correct_by_cellclass)
     fig.tight_layout()
+    if row['skel'] is not None:
+        align_ipl_panel_box(ax_morph, ax_ipl)
     return fig
 
 
@@ -780,7 +918,9 @@ heatmap_pane = pn.pane.Matplotlib(render_heatmap(time_slider.value, selected_idx
                                    tight=True, format='png', dpi=100)
 tl_scatter_pane = pn.pane.Plotly(
     make_scatter_figure(selected_idx=tl_roi_dropdown.value, stim_type=tl_state['stim_type'], field=tl_state['field']))
-tl_morph_pane = pn.pane.Matplotlib(render_morph_only(tl_roi_dropdown.value), tight=True, format='png', dpi=100)
+tl_morph_pane = pn.pane.Matplotlib(
+    render_morph_only(tl_roi_dropdown.value, correct_by_cellclass=cellclass_correction_dropdown.value),
+    tight=True, format='png', dpi=100)
 
 
 def redraw_tl_scatter(idx):
@@ -790,7 +930,7 @@ def redraw_tl_scatter(idx):
 
 def redraw_tl_morph(idx):
     old_fig = tl_morph_pane.object
-    tl_morph_pane.object = render_morph_only(idx)
+    tl_morph_pane.object = render_morph_only(idx, correct_by_cellclass=cellclass_correction_dropdown.value)
     plt.close(old_fig)
 
 
@@ -873,7 +1013,7 @@ timeline_layout = pn.Column(
     pn.Row(
         heatmap_pane,
         pn.Column(tl_scatter_pane, tl_roi_dropdown),
-        tl_morph_pane,
+        pn.Column(tl_morph_pane, cellclass_correction_dropdown),
     ),
 )
 

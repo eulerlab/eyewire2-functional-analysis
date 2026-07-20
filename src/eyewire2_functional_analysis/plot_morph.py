@@ -217,6 +217,76 @@ def plot_morph(ax, row, rad: float | None = 150, reg=None, rotation_deg=None, an
     return sx, sy, sz
 
 
+# Fixed colour per Baden et al. 2016 supergroup, shared across all 3 levels of
+# `plot_type_prediction_bars` (supergroup/group/cluster) so a given supergroup's
+# probability mass is always the same colour no matter which bar it's stacked into.
+SUPERGROUP_COLORS = {
+    'OFF': '#4c72b0',
+    'ON-OFF': '#dd8452',
+    'Fast ON': '#55a868',
+    'Slow ON': '#c44e52',
+    'Unc. ON': '#8172b2',
+    'Unc. SbC': '#937860',
+    'dAC': '#64b5cd',
+}
+
+
+def plot_type_prediction_bars(ax, row, prob_col='probs_per_cluster', annotate_thresh=0.2,
+                               colors=SUPERGROUP_COLORS, fontsize=6, correct_by_cellclass=False,
+                               cellclass_col='Cell Class'):
+    """Vertical stacked-bar plot of predicted-type probabilities at the supergroup/group/cluster
+    levels, one bar per level, each summing to 1.
+
+    Uses `baden16_utils.probs_per_cluster_to_level_probs` to aggregate `row[prob_col]` (the 75-length
+    Baden et al. 2016 cluster-probability vector) into supergroup/group/cluster-level probabilities.
+    Every segment is coloured by its supergroup (`colors`), so the same supergroup gets the same
+    colour at every level. The top prediction at each level is always annotated, plus any other
+    segment whose probability exceeds `annotate_thresh`.
+
+    Args:
+        ax: Matplotlib Axes to plot on.
+        row: DataFrame row with a `prob_col` entry (length-75 array of cluster probabilities), and,
+            if `correct_by_cellclass` is set, a `cellclass_col` entry.
+        prob_col: Column name of the per-cluster probability vector.
+        annotate_thresh: Probability threshold above which a non-top segment is also annotated.
+        colors: ``{supergroup: colour}`` mapping.
+        fontsize: Base font size for segment annotations; axis labels use `fontsize + 1`.
+        correct_by_cellclass: If ``True``, zero out/renormalize `row[prob_col]` to be consistent
+            with `row[cellclass_col]` (RGC vs. AC/dAC) before plotting, via
+            `baden16_utils.correct_probs_by_cellclass` -- corrects classifier confusion between
+            RGCs and dACs using the cell's known ground-truth class.
+        cellclass_col: Column name of the ground-truth cell class, used when `correct_by_cellclass`.
+    """
+    from eyewire2_functional_analysis import baden16_utils
+
+    probs = row[prob_col]
+    if correct_by_cellclass:
+        probs = baden16_utils.correct_probs_by_cellclass(row[cellclass_col], probs)
+
+    sg_probs, group_probs, cluster_probs = baden16_utils.probs_per_cluster_to_level_probs(probs)
+    levels = [('Supergroup', sg_probs), ('Group', group_probs), ('Cluster', cluster_probs)]
+
+    for x, (_, entries) in enumerate(levels):
+        top_i = max(range(len(entries)), key=lambda i: entries[i][2])
+        bottom = 0.0
+        for i, (label, sg, prob) in enumerate(entries):
+            if prob > 0:
+                ax.bar(x, prob, bottom=bottom, width=0.6, color=colors.get(sg, '#999999'),
+                       edgecolor='white', linewidth=0.3)
+                if i == top_i or prob > annotate_thresh:
+                    ax.text(x, bottom + prob / 2, f'{label}\n{prob:.2f}', ha='center', va='center',
+                            fontsize=fontsize)
+            bottom += prob
+
+    ax.set_xticks(range(len(levels)))
+    ax.set_xticklabels([name for name, _ in levels], fontsize=fontsize + 1)
+    ax.set_ylim(0, 1)
+    ax.set_ylabel('Predicted type\nprobability', fontsize=fontsize + 1)
+    ax.tick_params(axis='y', labelsize=fontsize)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+
 def plot_mosaic(df, extent=(350, 1000, 0, 650)):
     """Plot a coverage-density mosaic map for all cells in ``df``.
 
@@ -366,6 +436,76 @@ def plot_sac_lines(ax, xlim, text=True, con='#FFC09F', coff='#17CFB9', ls='-', l
         ax.text(xlim[1], 12, '  OFF', va='bottom', ha='right', color=coff, fontsize=8)
 
 
+def compute_ipl_z_profile(skel, zlim=(-30, 30)):
+    """Compute a cell skeleton's IPL depth-density z-profile using ``pywarper``.
+
+    The ``pywarper``/SAC-surface-flattening machinery this calls is somewhat slow and, without
+    the optional ``scikit-sparse`` dependency, noticeably slower still -- for interactive use,
+    prefer precomputing this once per cell (see `scripts/preprocessing/compute_ipl_profiles.py`)
+    and loading the cached result (`data_loader.load_ipl_profile`) instead of calling this live.
+
+    Args:
+        skel: A ``skeliner.Skeleton`` (soma/axon nodes are pruned internally; the input is not
+            modified).
+        zlim: ``(min, max)`` IPL depth range (µm) to compute the profile over.
+
+    Returns:
+        tuple: ``(ipl, dens)`` -- 1-D arrays of IPL depth bin centres and density.
+    """
+    from pywarper.warpers import get_z_profile
+    import skeliner as sk
+    from copy import deepcopy
+    from eyewire2_functional_analysis.data_loader import LazySkeleton
+
+    # `copy.deepcopy` on a `LazySkeleton` (see `data_loader.add_skels`) would otherwise return
+    # another `LazySkeleton` wrapper rather than a deep copy of the real skeleton -- unwrap first.
+    if isinstance(skel, LazySkeleton):
+        skel = skel.load()
+
+    skel = deepcopy(skel)
+    skel.node2verts = None
+    sk.post.prune(
+        skel=skel,
+        kind="nodes",
+        nodes=np.where(skel.ntype == 2)[0]
+    )
+
+    z_dict = get_z_profile(
+        skel=skel,
+        extent=zlim,
+    )
+    return z_dict['x'], z_dict['distribution']
+
+
+def plot_ipl_profile_from_arrays(ax, ipl, dens, c='#DA3B3C', text=False, zlim=(-30, 30)):
+    """Render an IPL depth-density profile from precomputed ``(ipl, dens)`` arrays.
+
+    The plotting half of :func:`plot_ipl_profile`, split out so callers with an already-computed
+    or cached profile (e.g. from `data_loader.load_ipl_profile`) don't need `pywarper`/a live
+    skeleton to draw it.
+
+    Args:
+        ax: Matplotlib Axes to plot on.
+        ipl: 1-D array of IPL depth bin centres, as returned by :func:`compute_ipl_z_profile`.
+        dens: 1-D array of density values aligned with `ipl`.
+        c: Colour of the density curve.
+        text: If ``True``, annotate the ON/OFF stratification lines with labels.
+        zlim: ``(min, max)`` IPL depth range (µm) for the y-axis.
+    """
+    vmax = dens.max()
+    xlim = -0.1 * vmax, vmax * 1.1
+
+    ax.set_aspect('auto', 'box')
+    ax.set_ylim(zlim)
+
+    plot_sac_lines(ax, xlim, text=text)
+
+    ax.set_xlim(xlim)
+    ax.plot(dens, ipl, c=c, lw=1)
+    ax.set(xticks=[], yticks=[], xlabel=None, ylabel=None)
+    ax.axis('off')
+
+
 def plot_ipl_profile(ax, row, c='#DA3B3C', text=False):
     """Plot the IPL depth-density profile of a cell skeleton.
 
@@ -378,35 +518,6 @@ def plot_ipl_profile(ax, row, c='#DA3B3C', text=False):
         c: Colour of the density curve.
         text: If ``True``, annotate the ON/OFF stratification lines with labels.
     """
-    from pywarper.warpers import get_z_profile
-    import skeliner as sk
-    from copy import deepcopy
-    
-    skel = deepcopy(row['skel'])
-    skel.node2verts = None
-    sk.post.prune(
-        skel=skel,
-        kind="nodes",
-        nodes=np.where(skel.ntype == 2)[0]
-    )
     zlim = (-30, 30)
-    
-    z_dict = get_z_profile(
-        skel=skel,
-        extent=zlim,
-    )
-    ipl = z_dict['x']
-    dens = z_dict['distribution']
-
-    vmax = dens.max()
-    xlim = -0.1*vmax, vmax*1.1
-
-    ax.set_aspect('auto', 'box')
-    ax.set_ylim(zlim)
-
-    plot_sac_lines(ax, xlim, text=text)
-
-    ax.set_xlim(xlim)
-    ax.plot(dens, ipl, c=c, lw=1)
-    ax.set(xticks=[], yticks=[], xlabel=None, ylabel=None)
-    ax.axis('off')
+    ipl, dens = compute_ipl_z_profile(row['skel'], zlim=zlim)
+    plot_ipl_profile_from_arrays(ax, ipl, dens, c=c, text=text, zlim=zlim)

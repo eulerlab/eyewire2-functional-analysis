@@ -1,5 +1,7 @@
 # Copied from djimaging
 
+from warnings import warn
+
 import numpy as np
 
 # Cluster ID, Cluster Name, Group ID, Supergroup
@@ -295,5 +297,92 @@ def baden16_cluster_probs_to_info(probs):
     prob_supergroup = np.sum(probs[supergroups == supergroup])
     prob_rgc = np.sum(probs[supergroups != 'dAC'])
     prob_class = (1. - prob_rgc) if supergroup == 'dAC' else prob_rgc
+
+    return cluster_id, group_id, supergroup, prob_cluster, prob_group, prob_supergroup, prob_class
+
+
+def probs_per_cluster_to_level_probs(probs):
+    """Aggregate a 75-length per-cluster probability vector into per-level probabilities.
+
+    Args:
+        probs: Array-like of length 75 containing probabilities for each of the
+            75 Baden clusters (sum need not equal 1).
+
+    Returns:
+        tuple: ``(supergroup_probs, group_probs, cluster_probs)``, each a list of
+        ``(label, supergroup, prob)`` tuples summed at that level. Entries are in
+        `BADEN_CLUSTER_INFO`'s array order, which is already grouped contiguously
+        by supergroup and then by group, so bars built from these lists stack
+        comparably across levels. Group labels use the shortened group name
+        (see :func:`shorten_baden_name`); cluster labels use the cluster name
+        (e.g. ``'17a'``).
+
+    Raises:
+        ValueError: If ``probs`` does not have exactly 75 elements.
+    """
+    probs = np.asarray(probs, dtype=float)
+    if len(probs) != 75:
+        raise ValueError(f"Expected 75 probabilities corresponding to 75 Baden clusters, got {len(probs)}.")
+
+    cluster_names = BADEN_CLUSTER_INFO[:, 1].astype(str)
+    group_ids = BADEN_CLUSTER_INFO[:, 2].astype(int)
+    supergroups = BADEN_CLUSTER_INFO[:, 3].astype(str)
+
+    cluster_probs = list(zip(cluster_names, supergroups, probs))
+
+    group_order, group_sum, group_supergroup = [], {}, {}
+    for gid, sg, p in zip(group_ids, supergroups, probs):
+        if gid not in group_sum:
+            group_order.append(gid)
+            group_sum[gid] = 0.0
+            group_supergroup[gid] = sg
+        group_sum[gid] += p
+    group_probs = [(baden_group_id_to_group_name(gid, shorten=True), group_supergroup[gid], group_sum[gid])
+                   for gid in group_order]
+
+    sg_order, sg_sum = [], {}
+    for sg, p in zip(supergroups, probs):
+        if sg not in sg_sum:
+            sg_order.append(sg)
+            sg_sum[sg] = 0.0
+        sg_sum[sg] += p
+    supergroup_probs = [(sg, sg, sg_sum[sg]) for sg in sg_order]
+
+    return supergroup_probs, group_probs, cluster_probs
+
+
+def correct_probs_by_cellclass(cellclass, probs_per_cluster):
+    """Zero out per-cluster probability mass inconsistent with a known ground-truth cell class,
+    then renormalize -- corrects classifier confusion between RGCs and dACs (displaced amacrine
+    cells) using independent information (e.g. EM proofreading) about which broad class the cell
+    actually belongs to.
+
+    Args:
+        cellclass: ``'RGC'`` or ``'AC'`` (i.e. dAC). Anything else is treated as ``'AC'``, with a warning.
+        probs_per_cluster: Array-like of length 75 containing probabilities for each of the
+            75 Baden clusters (sum need not equal 1).
+
+    Returns:
+        numpy.ndarray: Renormalized length-75 probability vector, with all clusters outside
+        `cellclass`'s broad class zeroed out.
+    """
+    cluster_is_ac = BADEN_CLUSTER_INFO[:, -1] == 'dAC'
+
+    probs_per_cluster = np.asarray(probs_per_cluster, dtype=float).copy()
+    if cellclass == 'RGC':
+        probs_per_cluster[cluster_is_ac] = 0
+    else:
+        if not cellclass == 'AC':
+            warn('cellclass is not AC or RGC, but will treat as AC')
+        probs_per_cluster[~cluster_is_ac] = 0
+
+    probs_per_cluster /= probs_per_cluster.sum()
+    return probs_per_cluster
+
+
+def infer_cellinfo_using_cellclass(cellclass, probs_per_cluster):
+    probs_per_cluster = correct_probs_by_cellclass(cellclass, probs_per_cluster)
+    cluster_id, group_id, supergroup, prob_cluster, prob_group, prob_supergroup, prob_class = (
+        baden16_cluster_probs_to_info(probs_per_cluster))
 
     return cluster_id, group_id, supergroup, prob_cluster, prob_group, prob_supergroup, prob_class

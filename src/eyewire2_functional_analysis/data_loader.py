@@ -13,6 +13,7 @@ DATA_2P = os.path.join(DATA_ROOT, "data-2p")
 DATA_SS = os.path.join(DATA_ROOT, "spreadsheets")
 DATA_SWC = os.path.join(DATA_ROOT, "swc")
 DATA_REGISTRATION = os.path.join(DATA_ROOT, "registration")
+DATA_IPL_PROFILES = os.path.join(DATA_ROOT, "ipl_profiles")
 
 MAIN_ALL_CELLS_SHEET = "Eyewire II Proofread Cells Main List - All Cells 2026-07-03.csv"
 MAP_SHEET = "Eyewire II Proofread Cells Main List - EM-2p-mapping 2026-07-08e v2-final.csv"
@@ -200,6 +201,26 @@ def load_df_rois_morph(
 
 
 
+def load_ipl_profile(seg_id, data_folder: str | Path = DATA_IPL_PROFILES) -> pd.DataFrame | None:
+    """Load a precomputed IPL depth-density profile for one cell.
+
+    See `scripts/preprocessing/compute_ipl_profiles.py`, which writes one ``{Latest SegID}.csv``
+    per cell into `data_folder`.
+
+    Args:
+        seg_id: The cell's ``Latest SegID``.
+        data_folder: Directory containing the per-cell profile CSVs.
+
+    Returns:
+        pandas.DataFrame | None: Two columns, ``z`` (IPL depth bin centre, µm) and ``dens``
+        (density), or ``None`` if no cached profile exists for `seg_id`.
+    """
+    path = os.path.join(data_folder, f'{seg_id}.csv')
+    if not os.path.isfile(path):
+        return None
+    return pd.read_csv(path)
+
+
 class LazySkeleton:
     """A ``skeliner.core.Skeleton`` that is only parsed from its SWC file on first use.
 
@@ -221,7 +242,28 @@ class LazySkeleton:
             self._skel = sk.io.load_swc(self.swc_path)
         return self._skel
 
+    def load(self):
+        """Force the underlying ``skeliner.Skeleton`` to be parsed (if not already) and return it.
+
+        For code that needs the concrete ``Skeleton`` itself rather than transparent attribute
+        access -- e.g. before ``copy.deepcopy``, which (via the default slot-copying protocol)
+        would otherwise return another ``LazySkeleton`` wrapper rather than a deep copy of the
+        real skeleton, and that wrapper's restrictive ``__slots__`` reject arbitrary attribute
+        assignment (`AttributeError` on anything but ``swc_path``/``_skel``).
+        """
+        return self._load()
+
     def __getattr__(self, name):
+        # Dunder lookups (e.g. `__deepcopy__`, `__reduce_ex__`, `__getstate__`) come from
+        # protocols (copy, pickle, ...) probing for optional hooks via `getattr(obj, name, None)`.
+        # Proxying those into `_load()` -- rather than raising `AttributeError` like a real
+        # missing attribute would -- means the very first such probe on a fresh, not-yet-`__init__`
+        # copy-reconstructed instance (whose `_skel` slot isn't set yet) calls `_load()`, which
+        # re-reads `self._skel`, which is *also* unset, re-entering `__getattr__` and recursing
+        # forever. Excluding dunders lets `copy.deepcopy`/`pickle` fall back to the normal
+        # slot-based protocol instead.
+        if name.startswith('__') and name.endswith('__'):
+            raise AttributeError(name)
         return getattr(self._load(), name)
 
     def __repr__(self):

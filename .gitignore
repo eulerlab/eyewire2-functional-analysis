@@ -4,8 +4,9 @@ __pycache__/
 *$py.class
 
 # Files
-data/data-2p
-
+*.npz
+*.npy
+*.parquet
 *.pickle
 *.pkl
 *.png
@@ -115,13 +116,6 @@ ENV/
 # PyCharm Files
 .idea/
 *events.
-
-
-# Files
-*.npz
-*.npy
-*.pkl
-*.pickle
 
 # Add file exceptions here
 !data/stimuli/global_chirp/chirp1000_setup3_movie_and_trigger.npz

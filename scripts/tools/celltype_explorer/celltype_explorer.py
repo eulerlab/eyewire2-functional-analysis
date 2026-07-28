@@ -53,6 +53,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.patches import Patch, Rectangle
 
 from eyewire2_functional_analysis import data_loader, plot_traces, registration, style
+from eyewire2_functional_analysis.ds import MB_DIRS, MB_DIRS_SYMBOLS_D_UP
 from eyewire2_functional_analysis.space_mapping import align_and_place_skel
 
 style.set_rc_params()
@@ -83,6 +84,10 @@ FIELD_COLORS = dict(zip(FIELDS, plt.get_cmap('tab10').colors))
 FIELD_OPTIONS = {'All fields': None, **{f: f for f in FIELDS}}
 
 MORPH_MIN_ZOOM_UM = 100
+
+# Figure size (inches) -- shared with `add_bar_dir_panel_and_colorbar`, which needs the
+# actual width/height ratio to size the direction-tuning polar panel as a physical square.
+FIG_FIGSIZE = (12.5, 9)
 
 # %% [markdown]
 # ### Cell-class filter (RGC / dAC / Other)
@@ -272,8 +277,7 @@ def plot_chirp_overlay(ax, sub):
     time = np.arange(n_t) * dt
     traces = np.stack(sub['chirp_average_norm'].to_numpy())
     colors = [row_color(row) for _, row in sub.iterrows()]
-    plot_overlay_with_mean(ax, time, traces, colors, f"Chirp, mean over trials per cell (n={len(sub)})",
-                           vlines=(2, 5, 8, 30))
+    plot_overlay_with_mean(ax, time, traces, colors, "Chirp, mean over trials per cell", vlines=(2, 5, 8, 30))
     return time[-1]
 
 
@@ -289,9 +293,49 @@ def plot_bar_overlay(ax, sub):
     time = np.arange(n_t) * dt
     traces = np.stack(sub['bar_time_component'].to_numpy())
     colors = [row_color(row) for _, row in sub.iterrows()]
-    plot_overlay_with_mean(ax, time, traces, colors, f"Moving bar, time component (n={len(sub)})",
-                           vlines=plot_traces.BAR_STIM_TIMES)
+    # Kept short ("Moving bar" rather than e.g. "Moving bar, time component") -- this
+    # panel is narrowed by scale_panel_widths_by_duration (~4 s vs. chirp's ~33 s) and
+    # sits right next to the direction-tuning polar panel (plot_bar_dir_overlay), so a
+    # longer left-aligned title would overflow this panel's own width straight into it.
+    plot_overlay_with_mean(ax, time, traces, colors, "Moving bar", vlines=plot_traces.BAR_STIM_TIMES)
     return time[-1]
+
+
+# `bar_dir_component`'s 8 entries are ordered by ascending direction (0, 45, 90, ..., 315
+# deg), matching `plot_traces.preprocess_mb_snippets`'s own sort order -- not `MB_DIRS`'s
+# raw stimulus-presentation order.
+SORTED_DIR_RAD = np.deg2rad(sorted(MB_DIRS))
+
+
+def plot_bar_dir_overlay(ax, sub):
+    """Every row's moving-bar direction-tuning curve (`bar_dir_component` -- precomputed,
+    min-max normalized to peak at 1; the same SVD-derived quantity `plot_traces.
+    plot_bar_dir` computes live as `dir_component`) overlaid on a shared polar axes,
+    colour-coded by recording time, plus the across-cell mean curve on top in black."""
+    angles = np.append(SORTED_DIR_RAD, SORTED_DIR_RAD[0])
+    for _, row in sub.iterrows():
+        values = np.append(row['bar_dir_component'], row['bar_dir_component'][0])
+        ax.plot(angles, values, color=row_color(row), lw=0.8, alpha=0.6, clip_on=False)
+
+    traces = np.stack(sub['bar_dir_component'].to_numpy())
+    mean_vals = traces.mean(axis=0)
+    mean = np.append(mean_vals, mean_vals[0])
+    ax.plot(angles, mean, color='black', lw=2, clip_on=False)
+
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+    ax.set_rmin(0)
+    ax.set_ylim(0, 1)
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels([])
+    cardinal_dirs = (0, 90, 180, 270)
+    ax.set_xticks(np.deg2rad(cardinal_dirs))
+    ax.set_xticklabels([MB_DIRS_SYMBOLS_D_UP[np.argmax(np.array(MB_DIRS) == d)] for d in cardinal_dirs],
+                        fontsize=10, fontweight='bold', fontname='DejaVu Sans', color='#999999')
+    # Kept short (no "Moving bar,"/"(n=...)" prefix/suffix) -- this panel sits right next
+    # to the also-narrow `plot_bar_overlay` time-component panel (see its own comment), so
+    # two long left-aligned titles this close together would run into each other.
+    ax.set_title("Direction tuning", loc='left')
 
 
 MC_TEST_INDICES = (0, 59, 118)
@@ -337,40 +381,62 @@ def plot_mc_overlay(ax, sub):
     first_tt = np.append(first_tt, first_tt[-1] + np.median(np.diff(first_tt)))
     vlines = first_tt[MC_TEST_INDICES[0]:MC_TEST_INDICES[0] + 6] - first_tt[MC_TEST_INDICES[0]]
 
-    plot_overlay_with_mean(ax, time, traces, colors, f"Natural movie (mouse cam), mean over 3 test reps (n={len(sub)})",
+    plot_overlay_with_mean(ax, time, traces, colors, "Natural movie (mouse cam), mean over 3 test reps",
                            vlines=vlines)
     return time[-1]
 
 
-def add_time_colorbar(fig, ax_bar, ax_chirp, height_frac=0.4, gap=0.015):
-    """Horizontal colorbar translating `row_color`'s colour back to session-elapsed
-    recording time in minutes, increasing left-to-right (matplotlib's default for a
-    horizontal bar, `TIME_NORM`'s low/high end at the left/right respectively -- no flip
-    needed). Ticked at each field's own recording time.
-
-    Placed to the right of the (duration-narrowed, see `scale_panel_widths_by_duration`)
-    moving-bar panel, filling the freed-up width up to the chirp panel's right edge --
-    chirp has the longest duration of the 3 response panels, so it keeps its full
-    original width and marks where that freed-up space ends. Must be called after
-    `scale_panel_widths_by_duration`, since `ax_bar`'s width (and thus how much space is
-    actually free to its right) is only finalized there.
-    """
-    pos_bar = ax_bar.get_position()
-    pos_chirp = ax_chirp.get_position()
-    x0 = pos_bar.x0 + pos_bar.width + gap
-    width = (pos_chirp.x0 + pos_chirp.width) - x0
-    height = pos_bar.height * height_frac
-    y0 = pos_bar.y0 + (pos_bar.height - height) / 2
-    cax = fig.add_axes([x0, y0, width, height])
-
+def draw_time_colorbar(cax):
+    """Horizontal colorbar in `cax` translating `row_color`'s colour back to session-
+    elapsed recording time in minutes, increasing left-to-right (matplotlib's default for
+    a horizontal bar, `TIME_NORM`'s low/high end at the left/right respectively -- no flip
+    needed). Ticked at each field's own recording time."""
     sm = plt.cm.ScalarMappable(cmap=TIME_CMAP, norm=TIME_NORM)
-    cb = fig.colorbar(sm, cax=cax, orientation='horizontal')
+    cb = cax.figure.colorbar(sm, cax=cax, orientation='horizontal')
     cb.set_label('Recording time [min]', fontsize=8)
     cb.ax.tick_params(labelsize=7)
     tick_times = list(FIELD_CHIRP_T0.values())
     cb.set_ticks(tick_times)
     cb.set_ticklabels([f"{t / 60:.0f}" for t in tick_times])
-    return cax
+
+
+def add_bar_dir_panel_and_colorbar(fig, ax_bar, ax_chirp, sub, gap=0.02, cbar_height_frac=0.25):
+    """Add the moving-bar direction-tuning polar overlay (`plot_bar_dir_overlay`) and the
+    time colorbar (`draw_time_colorbar`) side by side, in the width `scale_panel_widths_
+    by_duration` freed up to the right of the (duration-narrowed) moving-bar panel: the
+    polar panel first, sized to a physical square (using `FIG_FIGSIZE`'s aspect ratio) matching
+    the row's height, then the colorbar in whatever's left -- considerably shorter than
+    when it had that whole freed-up width to itself. Must be called after
+    `scale_panel_widths_by_duration`, since `ax_bar`'s width (and thus the free space) is
+    only finalized there.
+    """
+    pos_bar = ax_bar.get_position()
+    pos_chirp = ax_chirp.get_position()
+    right_edge = pos_chirp.x0 + pos_chirp.width
+
+    polar_width = pos_bar.height * (FIG_FIGSIZE[1] / FIG_FIGSIZE[0])
+    polar_x0 = pos_bar.x0 + pos_bar.width + gap
+    ax_polar = fig.add_axes([polar_x0, pos_bar.y0, polar_width, pos_bar.height], projection='polar')
+    plot_bar_dir_overlay(ax_polar, sub)
+
+    # matplotlib's PolarAxes.clear() hardcodes its title to y=1.05 (axes-fraction, to clear
+    # the theta=0 tick label we rely on -- see `plot_bar_dir_overlay`'s cardinal-direction
+    # ticks), sitting noticeably higher than ax_bar's own (Cartesian, default-positioned)
+    # title even at the identical nominal box position. Measure the actual rendered gap
+    # and shrink ax_polar's box from the top by that amount so the two titles line up.
+    fig.canvas.draw()
+    delta_px = ax_polar.title.get_window_extent().y0 - ax_bar.title.get_window_extent().y0
+    if delta_px > 0:
+        delta_frac = delta_px / (fig.dpi * FIG_FIGSIZE[1])
+        pos_polar = ax_polar.get_position()
+        ax_polar.set_position([pos_polar.x0, pos_polar.y0, pos_polar.width, pos_polar.height - delta_frac])
+
+    cax_x0 = polar_x0 + polar_width + gap
+    cax_width = right_edge - cax_x0
+    cax_height = pos_bar.height * cbar_height_frac
+    cax_y0 = pos_bar.y0 + (pos_bar.height - cax_height) / 2
+    cax = fig.add_axes([cax_x0, cax_y0, cax_width, cax_height])
+    draw_time_colorbar(cax)
 
 
 def align_response_panels_to_morph(ax_morph, response_axes, gap=0.08):
@@ -415,13 +481,14 @@ def scale_panel_widths_by_duration(response_axes, durations):
 def render_celltype(field, cell_type, qfilt_only, cell_class):
     sub = selected_cells(field, cell_type, qfilt_only, cell_class)
 
-    fig = plt.figure(figsize=(12.5, 9))
+    fig = plt.figure(figsize=FIG_FIGSIZE)
     # Morphology (`ax_morph`) spans all 3 rows; the response panels start out the same way
     # (so they divide its full height) but get shrunk to actually match it in
     # `align_response_panels_to_morph` below, once that height is known post-layout. No
-    # gridspec slot is reserved for the colorbar -- it's placed freehand afterwards (see
-    # `add_time_colorbar`), in whatever width `scale_panel_widths_by_duration` frees up to
-    # the right of the moving-bar panel.
+    # gridspec slot is reserved for the direction-tuning polar panel or the colorbar --
+    # they're placed freehand afterwards (see `add_bar_dir_panel_and_colorbar`), in
+    # whatever width `scale_panel_widths_by_duration` frees up to the right of the
+    # moving-bar panel.
     gs = fig.add_gridspec(3, 2, width_ratios=(1, 1.15), hspace=0.5, wspace=0.35)
     ax_morph = fig.add_subplot(gs[:, 0])
     # `aspect='equal'` (see plot_morph_overlay) shrinks ax_morph's box to fit its slot,
@@ -456,7 +523,7 @@ def render_celltype(field, cell_type, qfilt_only, cell_class):
     if len(sub) > 0:
         align_response_panels_to_morph(ax_morph, [ax_chirp, ax_bar, ax_mc])
         scale_panel_widths_by_duration([ax_chirp, ax_bar, ax_mc], [chirp_duration, bar_duration, mc_duration])
-        add_time_colorbar(fig, ax_bar, ax_chirp)
+        add_bar_dir_panel_and_colorbar(fig, ax_bar, ax_chirp, sub)
     return fig
 
 

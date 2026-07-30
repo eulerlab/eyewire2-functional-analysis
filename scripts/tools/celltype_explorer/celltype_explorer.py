@@ -58,12 +58,12 @@ import pandas as pd
 import panel as pn
 import plotly.graph_objects as go
 
-from eyewire2_functional_analysis import data_loader, plot_traces, registration, style
+from eyewire2_functional_analysis import data_loader, plot_morph, plot_traces, registration, style
 from eyewire2_functional_analysis.ds import MB_DIRS, MB_DIRS_SYMBOLS_D_UP
 from eyewire2_functional_analysis.space_mapping import align_and_place_skel
 
 style.set_rc_params()
-pn.extension('plotly')
+pn.extension('plotly', 'modal')
 
 # %% [markdown]
 # ## Load data
@@ -164,6 +164,21 @@ FIELD_CHIRP_T0 = {f: field_chirp_start_time(f) for f in FIELDS}
 TIME_CMAP = plt.get_cmap('viridis')
 TIME_NORM = mcolors.Normalize(vmin=min(FIELD_CHIRP_T0.values()), vmax=max(FIELD_CHIRP_T0.values()))
 
+
+# %% [markdown]
+# ### Cell log table
+#
+# A simple Excel log the user can append to from the GUI (see the "Add to table" button
+# below) -- one row per cell of interest, with a free-text comment. Lives next to this
+# script (not under `data/`, since it's user-curated output, not released/input data), so
+# it's created fresh on first run rather than shipped with the repo.
+
+# %%
+LOG_TABLE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'celltype_explorer_log.xlsx')
+LOG_TABLE_COLUMNS = ['field', 'ROI number', 'morphological cell type', 'passed quality filter', 'comment']
+
+if not os.path.exists(LOG_TABLE_PATH):
+    pd.DataFrame(columns=LOG_TABLE_COLUMNS).to_excel(LOG_TABLE_PATH, index=False)
 
 
 # %% [markdown]
@@ -330,6 +345,98 @@ def row_color(row):
     """A row's colour for the response-overlay panels: when its field was recorded during
     the session (`FIELD_CHIRP_T0`/`TIME_CMAP`/`TIME_NORM`)."""
     return TIME_CMAP(TIME_NORM(FIELD_CHIRP_T0[row['field']]))
+
+
+# IPL depth range (um) the cached per-cell profiles (`data_loader.load_ipl_profile`) were
+# computed over -- matches `plot_morph.compute_ipl_z_profile`'s own default and
+# `scripts/preprocessing/compute_ipl_profiles.py`, which produced the cache.
+IPL_ZLIM = (-30, 30)
+# CSS pixel size of the (Plotly) IPL-overlay pane -- same width as the morphology pane
+# above it (they sit in the same column), a good deal shorter since a depth profile only
+# needs a tall-and-narrow plot, not a square one.
+IPL_PLOTLY_SIZE = dict(width=MORPH_PLOTLY_SIZE['width'], height=220)
+
+
+def make_ipl_figure(sub, selected_key):
+    """Plotly figure overlaying every row in `sub`'s cached IPL depth-density profile
+    (`data_loader.load_ipl_profile`, keyed by `Latest SegID`) as a horizontal density curve
+    against IPL depth (y-axis) -- the same axis convention as `plot_morph.
+    plot_ipl_profile_from_arrays`, just drawn with Plotly instead of Matplotlib so it can
+    reuse the same click-to-select interaction as `make_morph_figure`.
+
+    Cells with no cached profile (`load_ipl_profile` returns `None` -- `pywarper` failed or
+    hasn't been run for that cell) are silently skipped, same as cells with no skeleton file
+    are skipped in the morphology panel, rather than surfaced as gaps needing an explanation.
+
+    If `selected_key` (a `df` row index, or `None`) names one of `sub`'s cells with a cached
+    profile, that cell's curve is drawn solid black (bold) and every other curve is dimmed
+    (not converted to gray, matching `make_morph_figure`); with no selection, all curves use
+    their normal field colour at full opacity. The ON/OFF SAC (ChAT band) reference lines
+    (`plot_morph.plot_sac_lines`'s fixed z=0/z=12 convention) are drawn once, in data
+    coordinates, spanning the full plotted density range.
+
+    Returns ``(fig, curve_to_key)``, same contract as `make_morph_figure` -- `curve_to_key`
+    maps this figure's own curve numbers back to `df` row indices (or `None` for the SAC
+    lines/background), used by the same `on_morph_click`-style handler.
+    """
+    fig = go.Figure()
+    curve_to_key = {}
+
+    profiles = {}
+    for key, row in sub.iterrows():
+        prof = data_loader.load_ipl_profile(row['Latest SegID'])
+        if prof is not None:
+            profiles[key] = prof
+
+    vmax = max((prof['dens'].max() for prof in profiles.values()), default=1.0)
+    xlim = (-0.1 * vmax, vmax * 1.1)
+
+    fig.add_trace(go.Scattergl(x=list(xlim), y=[0, 0], mode='lines',
+                              line=dict(color='#FFC09F', width=1), hoverinfo='none', showlegend=False))
+    curve_to_key[len(fig.data) - 1] = None
+    fig.add_trace(go.Scattergl(x=list(xlim), y=[12, 12], mode='lines',
+                              line=dict(color='#17CFB9', width=1), hoverinfo='none', showlegend=False))
+    curve_to_key[len(fig.data) - 1] = None
+
+    for key, row in sub.iterrows():
+        if key not in profiles:
+            continue
+        is_selected = key == selected_key
+        dimmed = selected_key is not None and not is_selected
+        color = 'black' if is_selected else FIELD_COLORS_HEX[row['field']]
+        opacity = 0.25 if dimmed else 1.0
+        prof = profiles[key]
+        fig.add_trace(go.Scattergl(
+            x=prof['dens'].to_numpy(), y=prof['z'].to_numpy(), mode='lines',
+            line=dict(color=color, width=2.5 if is_selected else 1), opacity=opacity,
+            hoverinfo='text', text=f"{row['field']} - ROI {row['roi_id']}<br>{row['Cell Type']}",
+            showlegend=False))
+        curve_to_key[len(fig.data) - 1] = key
+
+    fig.update_layout(
+        width=IPL_PLOTLY_SIZE['width'], height=IPL_PLOTLY_SIZE['height'],
+        margin=dict(l=50, r=10, t=30, b=30),
+        plot_bgcolor='white', paper_bgcolor='white', showlegend=False,
+        xaxis=dict(title='Density', range=xlim, gridcolor='#eee', zerolinecolor='#eee'),
+        yaxis=dict(title='IPL depth [um]', range=IPL_ZLIM, autorange='reversed',
+                   gridcolor='#eee', zerolinecolor='#eee'),
+        title=dict(text=f"IPL depth profile ({len(profiles)}/{len(sub)} with cached profile)",
+                   x=0, xanchor='left', font=dict(size=13)),
+    )
+    return fig, curve_to_key
+
+
+def empty_ipl_figure():
+    """Placeholder for `ipl_pane` when no cells match the current filters -- mirrors
+    `empty_morph_figure`."""
+    fig = go.Figure()
+    fig.update_layout(
+        width=IPL_PLOTLY_SIZE['width'], height=IPL_PLOTLY_SIZE['height'],
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        annotations=[dict(text='No cells match this selection', showarrow=False,
+                          xref='paper', yref='paper', x=0.5, y=0.5)],
+    )
+    return fig, {}
 
 
 def plot_overlay_with_mean(ax, time, traces, colors, keys, selected_key, title, vlines=()):
@@ -632,15 +739,37 @@ celltype_dropdown = pn.widgets.Select(name='Morphological cell type',
                                        options=CELL_TYPES_BY_CLASS['RGC'], value=CELL_TYPES_BY_CLASS['RGC'][0],
                                        width=260)
 qfilt_checkbox = pn.widgets.Checkbox(name='Quality filter only (qfilt)', value=True)
+# Options rebuilt on every `full_redraw` (see `cell_dropdown_options`) to match the current
+# filtered `sub` -- an alternative, keyboard/list-friendly way to pick the highlighted cell
+# alongside clicking it in `morph_pane`/`ipl_pane`.
+cell_dropdown = pn.widgets.Select(name='Highlight cell', options={'(none)': None}, value=None, width=200)
+add_to_table_button = pn.widgets.Button(name='Add to table', button_type='primary', width=120)
 
-# The currently-selected cell (a `df` row index, or `None`) -- click a cell in `morph_pane`
-# to set it (`on_morph_click`), click the background to clear it. Any filter change resets
-# it too (`on_filter_change`), since a selection made under one field/cell-type/class
-# combination wouldn't necessarily mean anything under another.
+# The currently-selected cell (a `df` row index, or `None`) -- click a cell in `morph_pane`/
+# `ipl_pane`, or pick it from `cell_dropdown`, to set it; click the background to clear it.
+# Any filter change resets it too (`on_filter_change`), since a selection made under one
+# field/cell-type/class combination wouldn't necessarily mean anything under another.
 selected_key = None
-# `curve_to_key[curveNumber]` for the currently-shown `morph_pane` figure -- rebuilt by
-# `full_redraw` on every render (see `make_morph_figure`), read by `on_morph_click`.
+# `curve_to_key[curveNumber]` for the currently-shown `morph_pane`/`ipl_pane` figures --
+# rebuilt by `full_redraw` on every render (see `make_morph_figure`/`make_ipl_figure`), read
+# by `on_morph_click`/`on_ipl_click`.
 CURVE_TO_KEY = {}
+IPL_CURVE_TO_KEY = {}
+# Guards `cell_dropdown`'s 'value' watcher while `full_redraw` sets it programmatically (to
+# reflect a selection made by clicking a panel, or to reset it on a filter change) -- without
+# this, that assignment would itself fire `on_cell_dropdown_change`, which is only meant to
+# react to the user's own picks.
+_updating_cell_dropdown = False
+
+
+def cell_dropdown_options(sub):
+    """``{label: df row index}`` for `cell_dropdown`, one entry per row of `sub` (field + ROI
+    number, matching the hover text in `make_morph_figure`/`make_ipl_figure`), plus a leading
+    '(none)' entry (`None`) for "nothing selected"."""
+    options = {'(none)': None}
+    for key, row in sub.iterrows():
+        options[f"{row['field']} - ROI {row['roi_id']}"] = key
+    return options
 
 
 def empty_morph_figure():
@@ -662,10 +791,14 @@ _initial_sub = selected_cells(field_dropdown.value, celltype_dropdown.value, qfi
                                cellclass_dropdown.value)
 if len(_initial_sub):
     _initial_morph_fig, CURVE_TO_KEY = make_morph_figure(_initial_sub, field_dropdown.value, selected_key)
+    _initial_ipl_fig, IPL_CURVE_TO_KEY = make_ipl_figure(_initial_sub, selected_key)
 else:
     _initial_morph_fig, CURVE_TO_KEY = empty_morph_figure()
+    _initial_ipl_fig, IPL_CURVE_TO_KEY = empty_ipl_figure()
+cell_dropdown.options = cell_dropdown_options(_initial_sub)
 
 morph_pane = pn.pane.Plotly(_initial_morph_fig, margin=0)
+ipl_pane = pn.pane.Plotly(_initial_ipl_fig, margin=0)
 traces_pane = pn.pane.Matplotlib(render_traces_fig(_initial_sub, selected_key), tight=True, format='png', dpi=110,
                                   margin=0)
 title_pane = pn.pane.Markdown(
@@ -673,22 +806,31 @@ title_pane = pn.pane.Markdown(
     f"{field_dropdown.value or 'All fields'} -- n={len(_initial_sub)}",
     margin=(0, 0, 10, 0),
 )
+# Shows the selected cell's field/ROI once one is picked in `morph_pane`/`ipl_pane` (see
+# `on_morph_click`/`on_ipl_click`) -- empty (rather than a placeholder string) when nothing
+# is selected, matching the tool's existing "no selection" states elsewhere (e.g. all cells
+# at full opacity in make_morph_figure).
+selection_pane = pn.pane.Markdown('', margin=(0, 0, 0, 10))
 
 
 def full_redraw():
-    """The only place that actually redraws `morph_pane`/`traces_pane`/`title_pane` --
-    every widget/click handler below just updates `selected_key` (or a filter widget) and
-    calls this, so there's exactly one code path that rebuilds the view, regardless of how
-    the change was triggered (matches `interactive_explorer.py`'s `select_index`)."""
-    global CURVE_TO_KEY
+    """The only place that actually redraws `morph_pane`/`ipl_pane`/`traces_pane`/
+    `title_pane`/`selection_pane`/`cell_dropdown` -- every widget/click handler below just
+    updates `selected_key` (or a filter widget) and calls this, so there's exactly one code
+    path that rebuilds the view, regardless of how the change was triggered (matches
+    `interactive_explorer.py`'s `select_index`)."""
+    global CURVE_TO_KEY, IPL_CURVE_TO_KEY, _updating_cell_dropdown
     field = field_dropdown.value
     sub = selected_cells(field, celltype_dropdown.value, qfilt_checkbox.value, cellclass_dropdown.value)
 
     if len(sub):
         morph_fig, CURVE_TO_KEY = make_morph_figure(sub, field, selected_key)
+        ipl_fig, IPL_CURVE_TO_KEY = make_ipl_figure(sub, selected_key)
     else:
         morph_fig, CURVE_TO_KEY = empty_morph_figure()
+        ipl_fig, IPL_CURVE_TO_KEY = empty_ipl_figure()
     morph_pane.object = morph_fig
+    ipl_pane.object = ipl_fig
 
     old_traces_fig = traces_pane.object
     traces_pane.object = render_traces_fig(sub, selected_key)
@@ -697,6 +839,23 @@ def full_redraw():
     field_label = field if field is not None else 'All fields'
     title_pane.object = (f"### {cellclass_dropdown.value} -- {celltype_dropdown.value} -- "
                          f"{field_label} -- n={len(sub)}")
+
+    if selected_key is not None and selected_key in sub.index:
+        sel_row = sub.loc[selected_key]
+        selection_pane.object = f"**Field:** {sel_row['field']}  \n**ROI:** {sel_row['roi_id']}"
+    else:
+        selection_pane.object = ''
+
+    # Rebuild to match `sub` (options change with every filter change) and reflect
+    # `selected_key` (set here whether the selection came from `cell_dropdown` itself, a
+    # panel click, or a filter reset) -- guarded so this assignment doesn't recursively
+    # trigger `on_cell_dropdown_change`.
+    _updating_cell_dropdown = True
+    try:
+        cell_dropdown.param.update(options=cell_dropdown_options(sub),
+                                   value=selected_key if selected_key in sub.index else None)
+    finally:
+        _updating_cell_dropdown = False
 
 
 def on_filter_change(event=None):
@@ -740,18 +899,110 @@ def on_morph_click(event):
     full_redraw()
 
 
+def on_ipl_click(event):
+    """Same click-to-select behaviour as `on_morph_click`, but for `ipl_pane` (via
+    `IPL_CURVE_TO_KEY`) -- so a cell can be selected either from its morphology or from its
+    IPL depth-profile curve."""
+    global selected_key
+    click_data = event.new
+    ipl_pane.click_data = None  # reset so a stale replay of this event is a no-op
+    if not click_data or not click_data.get('points'):
+        return
+    point = click_data['points'][0]
+    selected_key = IPL_CURVE_TO_KEY.get(point.get('curveNumber', 0))
+    full_redraw()
+
+
+def on_cell_dropdown_change(event):
+    """Set `selected_key` from the user's own pick in `cell_dropdown` -- a keyboard/list-
+    friendly alternative to clicking the cell in `morph_pane`/`ipl_pane`. Ignored while
+    `full_redraw` is itself updating `cell_dropdown.value` to reflect a selection made some
+    other way (`_updating_cell_dropdown`), since that's not a new user choice."""
+    global selected_key
+    if _updating_cell_dropdown:
+        return
+    selected_key = event.new
+    full_redraw()
+
+
 field_dropdown.param.watch(on_filter_change, 'value')
 cellclass_dropdown.param.watch(on_cellclass_change, 'value')
 celltype_dropdown.param.watch(on_filter_change, 'value')
 qfilt_checkbox.param.watch(on_filter_change, 'value')
 morph_pane.param.watch(on_morph_click, 'click_data')
+ipl_pane.param.watch(on_ipl_click, 'click_data')
+cell_dropdown.param.watch(on_cell_dropdown_change, 'value')
+
+# %% [markdown]
+# ### "Add to table" logging
+#
+# Clicking `add_to_table_button` opens `log_modal`, prompting for a free-text comment
+# (`log_comment_input`) about the currently-selected cell; `log_save_button` appends that
+# row (field/ROI/cell type/qfilt, plus the comment) to `LOG_TABLE_PATH` and closes the
+# modal. Nothing is written if no cell is selected (`log_status_pane` explains why instead).
+
+# %%
+log_comment_input = pn.widgets.TextAreaInput(name='Comment', placeholder='Enter a comment for this cell...',
+                                              auto_grow=True, rows=3)
+log_save_button = pn.widgets.Button(name='Save', button_type='primary', width=100)
+log_status_pane = pn.pane.Markdown('', margin=(0, 0, 0, 5))
+log_modal = pn.Modal(pn.Column(log_status_pane, log_comment_input, log_save_button), width=400)
+
+# The cell (a `df` row index) `log_modal` is currently prompting a comment for -- captured
+# from `selected_key` when the modal is opened, since `selected_key` itself could in
+# principle change while the modal is up (e.g. a stray background click).
+_log_target_key = None
+
+
+def on_add_to_table_click(event):
+    """Open `log_modal` to collect a comment for the currently-selected cell -- or, with no
+    cell selected, show that as an inline message instead of opening the modal, since there
+    would be nothing to log a comment against."""
+    global _log_target_key
+    if selected_key is None:
+        log_status_pane.object = "*Select a cell first (click it in the morphology panel).*"
+        log_modal.open = True
+        return
+    _log_target_key = selected_key
+    log_status_pane.object = ''
+    log_comment_input.value = ''
+    log_modal.open = True
+
+
+def on_log_save_click(event):
+    """Append one row for `_log_target_key` to `LOG_TABLE_PATH` and close `log_modal`. Reads
+    the sheet fresh from disk (rather than keeping it in memory) so concurrently-running
+    copies of this tool, or manual edits, aren't clobbered by a stale in-memory copy."""
+    if _log_target_key is None:
+        log_modal.open = False
+        return
+    row = df.loc[_log_target_key]
+    log_df = pd.read_excel(LOG_TABLE_PATH)
+    new_row = pd.DataFrame([{
+        'field': row['field'],
+        'ROI number': row['roi_id'],
+        'morphological cell type': row['Cell Type'],
+        'passed quality filter': bool(row['qfilt']),
+        'comment': log_comment_input.value,
+    }])
+    log_df = pd.concat([log_df, new_row], ignore_index=True)
+    log_df.to_excel(LOG_TABLE_PATH, index=False)
+    log_modal.open = False
+
+
+add_to_table_button.on_click(on_add_to_table_click)
+log_save_button.on_click(on_log_save_click)
 
 layout = pn.Column(
     title_pane,
-    pn.Row(field_dropdown, cellclass_dropdown, celltype_dropdown, qfilt_checkbox),
+    pn.Row(field_dropdown, cellclass_dropdown, celltype_dropdown, qfilt_checkbox, cell_dropdown,
+          add_to_table_button),
     # `margin=0` on the panes themselves plus here on their Row -- morphology and the
-    # response panels sit right next to each other, no gap.
-    pn.Row(morph_pane, traces_pane, margin=0),
+    # response panels sit right next to each other, no gap. `selection_pane`/`ipl_pane` sit
+    # below the morphology pane, in its own column, so they don't affect that spacing.
+    pn.Row(pn.Column(morph_pane, selection_pane, ipl_pane, margin=0), traces_pane, margin=0),
+    log_modal,
+    margin=(0, 0, 0, 32),
 )
 
 # %%

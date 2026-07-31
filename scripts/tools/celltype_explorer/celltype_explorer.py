@@ -45,7 +45,9 @@
 # Two ways to run this:
 # - Opened in Jupyter (`uv run jupyter lab`, right-click -> Open With -> Notebook)
 #   for cell-by-cell exploration.
-# - As a standalone local app: `uv run panel serve scripts/tools/celltype_explorer/celltype_explorer.py --show`
+# - As a standalone local app: `uv run panel serve scripts/tools/celltype_explorer/celltype_explorer.py --show
+#   --port 5007` -- a different port than `interactive_explorer.py`'s default (5006), so
+#   both can run side by side.
 
 # %%
 import os
@@ -58,7 +60,7 @@ import pandas as pd
 import panel as pn
 import plotly.graph_objects as go
 
-from eyewire2_functional_analysis import baden16_utils, data_loader, plot_morph, plot_traces, registration, style
+from eyewire2_functional_analysis import baden16_utils, data_loader, plot_traces, registration, style
 from eyewire2_functional_analysis.ds import MB_DIRS, MB_DIRS_SYMBOLS_D_UP
 from eyewire2_functional_analysis.space_mapping import align_and_place_skel
 
@@ -163,6 +165,17 @@ def field_chirp_start_time(field):
 FIELD_CHIRP_T0 = {f: field_chirp_start_time(f) for f in FIELDS}
 TIME_CMAP = plt.get_cmap('viridis')
 TIME_NORM = mcolors.Normalize(vmin=min(FIELD_CHIRP_T0.values()), vmax=max(FIELD_CHIRP_T0.values()))
+
+# One colour per Baden et al. 2016 functional cluster (e.g. '12a'), sampled continuously
+# across `BADEN_CLUSTER_INFO`'s own row order -- clusters are already grouped contiguously
+# by supergroup then group in that table, so nearby clusters (same supergroup) land near
+# each other on the colormap too, while still being a continuous (not discrete/7-colour)
+# scale over all 75. Used by `cluster_prob_bar_html`'s bar segments.
+CLUSTER_CMAP = plt.get_cmap('turbo')
+CLUSTER_NAME_TO_COLOR_HEX = {
+    name: mcolors.to_hex(CLUSTER_CMAP(i / (len(baden16_utils.BADEN_CLUSTER_INFO) - 1)))
+    for i, name in enumerate(baden16_utils.BADEN_CLUSTER_INFO[:, 1])
+}
 
 
 # %% [markdown]
@@ -347,19 +360,13 @@ def row_color(row):
     return TIME_CMAP(TIME_NORM(FIELD_CHIRP_T0[row['field']]))
 
 
-# `group_id` per entry of `baden16_utils.BADEN_CLUSTER_INFO`, in the same (first-occurrence)
-# order `baden16_utils.probs_per_cluster_to_level_probs` builds its `group_probs` list in --
-# zipped against that list below to recover each group's numeric ID, since that function
-# itself only returns `(name, supergroup, prob)` tuples.
-_GROUP_IDS_IN_LEVEL_PROBS_ORDER = list(dict.fromkeys(
-    baden16_utils.BADEN_CLUSTER_INFO[:, 2].astype(int)))
-
-
-def top2_group_probs(row, correct_by_cellclass=False):
-    """The predicted-type probability distribution over the 46 Baden et al. 2016 functional
-    groups for `row` (from its `probs_per_cluster` cluster-level vector, aggregated via
-    `baden16_utils.probs_per_cluster_to_level_probs` -- see `plot_morph.
-    plot_type_prediction_bars`, which uses the same aggregation for its group-level bar),
+def top2_cluster_probs(row, correct_by_cellclass=False):
+    """The predicted-type probability distribution over the 75 Baden et al. 2016 functional
+    clusters (e.g. `'12a'` -- the same granularity `interactive_explorer.py`'s per-cell
+    "Cluster" prediction bar shows, one level more specific than the 46 functional groups)
+    for `row` (from its `probs_per_cluster` vector, aggregated via `baden16_utils.
+    probs_per_cluster_to_level_probs`, whose `cluster_probs` output already carries the
+    `'12a'`-style name directly -- no separate ID lookup needed, unlike the group level),
     sorted descending and truncated to the top 2.
 
     `correct_by_cellclass` matches `interactive_explorer.py`'s `cellclass_correction_dropdown`/
@@ -368,13 +375,37 @@ def top2_group_probs(row, correct_by_cellclass=False):
     renormalizing probability mass inconsistent with the cell's known ground-truth `Cell Class`
     (RGC vs. dAC) -- the classifier confuses the two fairly often. Off by default, same as there.
 
-    Returns a list of up to 2 ``(group_id, supergroup, prob)`` tuples (fewer only if a cell
-    somehow has fewer than 2 groups with nonzero probability mass)."""
+    Returns a list of up to 2 ``(cluster_name, supergroup, prob)`` tuples (fewer only if a
+    cell somehow has fewer than 2 clusters with nonzero probability mass)."""
+    probs = row['probs_per_cluster']
+    if correct_by_cellclass:
+        probs = baden16_utils.correct_probs_by_cellclass(row['Cell Class'], probs)
+    _, _, cluster_probs = baden16_utils.probs_per_cluster_to_level_probs(probs)
+    cluster_probs = [(name, sg, p) for name, sg, p in cluster_probs if p > 0]
+    cluster_probs.sort(key=lambda entry: entry[2], reverse=True)
+    return cluster_probs[:2]
+
+
+def top2_group_probs(row, correct_by_cellclass=False):
+    """The predicted-type probability distribution over the 46 Baden et al. 2016 functional
+    groups (e.g. `'On-Off DS 1'` -- the human-readable "functional cell type" name, one
+    level coarser than `top2_cluster_probs`'s clusters) for `row`, aggregated via
+    `baden16_utils.probs_per_cluster_to_level_probs`, whose `group_probs` output already
+    carries the shortened descriptive group name directly (each cluster's probability
+    summed into its parent group first). `correct_by_cellclass` as in `top2_cluster_probs`.
+
+    Note this is a *separate* ranking from `top2_cluster_probs`, not just "look up the
+    top-2 clusters' parent groups": a group's total probability mass (summed across all its
+    own clusters) can outrank another group whose single best cluster still beats any one of
+    the first group's clusters individually.
+
+    Returns a list of up to 2 ``(group_name, supergroup, prob)`` tuples (fewer only if a
+    cell somehow has fewer than 2 groups with nonzero probability mass)."""
     probs = row['probs_per_cluster']
     if correct_by_cellclass:
         probs = baden16_utils.correct_probs_by_cellclass(row['Cell Class'], probs)
     _, group_probs, _ = baden16_utils.probs_per_cluster_to_level_probs(probs)
-    group_probs = [(gid, sg, p) for gid, (_, sg, p) in zip(_GROUP_IDS_IN_LEVEL_PROBS_ORDER, group_probs) if p > 0]
+    group_probs = [(name, sg, p) for name, sg, p in group_probs if p > 0]
     group_probs.sort(key=lambda entry: entry[2], reverse=True)
     return group_probs[:2]
 
@@ -759,48 +790,60 @@ def render_traces_fig(sub, selected_key):
     return fig
 
 
-# Rendered CSS pixel width of `group_prob_bar_html`'s bar (excludes the field/ROI/cell-type
-# columns) -- generous, since a narrow bar leaves too little room for its group-ID labels to
-# be legible once a segment's probability share is small.
-GROUP_PROB_BAR_WIDTH_PX = 400
+# Rendered CSS pixel width of `cluster_prob_bar_html`'s bar itself (excludes the field/ROI/
+# cell-type columns, and the top-1/top-2 group-name text to its right) -- a bit wider than
+# a bare percentage bar would need, so a small segment's in-bar cluster-name label (e.g.
+# '22b') still has room to stay legible.
+CLUSTER_PROB_BAR_WIDTH_PX = 260
 
 
-def group_prob_bar_html(row, correct_by_cellclass=False, height_px=18, width_px=GROUP_PROB_BAR_WIDTH_PX):
-    """A horizontal stacked-bar HTML snippet, always spanning the full 0-100% probability
-    range (2 coloured segments for `row`'s top-2 predicted functional groups, plus a gray
-    remainder segment covering the rest of the mass, together always summing to `width_px`
-    -- flexbox-based, no plotting library involved, cheap to build per row of a long list),
-    each segment sized by its probability and labelled with its (numeric) group ID, coloured
-    by its parent supergroup (`plot_morph.SUPERGROUP_COLORS`, the same convention `plot_morph.
-    plot_type_prediction_bars` uses) -- so the same supergroup reads as the same colour here
-    and in `interactive_explorer.py`'s per-cell prediction bars. `correct_by_cellclass` is
-    forwarded to `top2_group_probs`."""
-    segments = top2_group_probs(row, correct_by_cellclass=correct_by_cellclass)
+def cluster_prob_bar_html(row, correct_by_cellclass=False, height_px=18, width_px=CLUSTER_PROB_BAR_WIDTH_PX):
+    """A horizontal stacked bar -- 2 segments for `row`'s top-2 predicted functional
+    *clusters* (`top2_cluster_probs`, e.g. `'12b'`), each labelled with its cluster name and
+    coloured continuously by cluster identity (`CLUSTER_NAME_TO_COLOR_HEX`, not discretely by
+    supergroup like `interactive_explorer.py`'s per-cell prediction bars/`SUPERGROUP_COLORS`),
+    plus a gray remainder covering the rest of the probability mass -- followed by text
+    naming the top-1 predicted functional *group* (`top2_group_probs`, e.g. `'On-Off DS 1'`,
+    the human-readable "functional cell type" -- a separate, coarser ranking than the
+    cluster-level bar, not just the bar's top cluster's parent group), then the top-2 group
+    in gray in brackets. `correct_by_cellclass` is forwarded to both.
+    """
+    cluster_segments = top2_cluster_probs(row, correct_by_cellclass=correct_by_cellclass)
     spans = []
-    for group_id, supergroup, prob in segments:
-        color = plot_morph.SUPERGROUP_COLORS.get(supergroup, '#999999')
+    for name, supergroup, prob in cluster_segments:
+        color = CLUSTER_NAME_TO_COLOR_HEX[name]
         spans.append(
-            f'<div title="Group {group_id} ({supergroup}): {prob:.0%}" '
+            f'<div title="Cluster {name} ({supergroup}): {prob:.0%}" '
             f'style="flex:{max(prob, 0.001)}; background:{color}; color:white; '
             f'display:flex; align-items:center; justify-content:center; overflow:hidden; '
-            f'font-size:10px; white-space:nowrap;">{group_id}</div>'
+            f'font-size:10px; white-space:nowrap;">{name}</div>'
         )
-    remainder = 1.0 - sum(p for _, _, p in segments)
+    remainder = 1.0 - sum(p for _, _, p in cluster_segments)
     if remainder > 0:
         spans.append(f'<div style="flex:{remainder}; background:#e0e0e0;"></div>')
-    return (f'<div style="display:flex; width:{width_px}px; height:{height_px}px; '
-            f'border-radius:3px; overflow:hidden;">{"".join(spans)}</div>')
+    bar_html = (f'<div style="display:flex; width:{width_px}px; height:{height_px}px; '
+                f'border-radius:3px; overflow:hidden;">{"".join(spans)}</div>')
+
+    group_segments = top2_group_probs(row, correct_by_cellclass=correct_by_cellclass)
+    if group_segments:
+        label_html = f'<span style="margin-left:8px;">{group_segments[0][0]}</span>'
+        if len(group_segments) > 1:
+            label_html += f' <span style="color:#999999;">({group_segments[1][0]})</span>'
+    else:
+        label_html = ''
+    return f'<div style="display:flex; align-items:center;">{bar_html}{label_html}</div>'
 
 
 def render_cell_list_html(sub, selected_key, correct_by_cellclass=False):
     """HTML table listing every row of `sub` -- field, ROI number, morphological cell type,
-    and its top-2 predicted functional-group probabilities as a horizontal stacked bar
-    (`group_prob_bar_html`) -- below the response-overlay panels (`render_traces_fig`).
+    and its predicted-type probability bar (top-2 clusters on the bar, top-2 functional
+    groups as text -- `cluster_prob_bar_html`) -- below the response-overlay panels
+    (`render_traces_fig`).
 
     `selected_key` (a `df` row index, or `None`) highlights that row (light-blue background),
     matching the highlight-on-selection convention used across the other panels, so the
     selected cell can also be found by scrolling this list. `correct_by_cellclass` is
-    forwarded to `group_prob_bar_html`/`top2_group_probs`."""
+    forwarded to `cluster_prob_bar_html`."""
     rows_html = []
     for key, row in sub.iterrows():
         bg = '#eaf2fb' if key == selected_key else 'transparent'
@@ -809,7 +852,7 @@ def render_cell_list_html(sub, selected_key, correct_by_cellclass=False):
             f'<td style="padding:2px 8px;">{row["field"]}</td>'
             f'<td style="padding:2px 8px;">{row["roi_id"]}</td>'
             f'<td style="padding:2px 8px;">{row["Cell Type"]}</td>'
-            f'<td style="padding:2px 8px;">{group_prob_bar_html(row, correct_by_cellclass=correct_by_cellclass)}</td>'
+            f'<td style="padding:2px 8px;">{cluster_prob_bar_html(row, correct_by_cellclass=correct_by_cellclass)}</td>'
             f'</tr>'
         )
     if not rows_html:
@@ -820,7 +863,7 @@ def render_cell_list_html(sub, selected_key, correct_by_cellclass=False):
         '<thead><tr style="text-align:left;">'
         '<th style="padding:2px 8px;">Field</th><th style="padding:2px 8px;">ROI</th>'
         '<th style="padding:2px 8px;">Cell type</th>'
-        '<th style="padding:2px 8px;">Top-2 predicted functional group (0-100%)</th>'
+        '<th style="padding:2px 8px;">Predicted functional type (cluster bar; group name)</th>'
         '</tr></thead><tbody>' + ''.join(rows_html) + '</tbody></table></div>'
     )
 
@@ -843,7 +886,7 @@ qfilt_checkbox = pn.widgets.Checkbox(name='Quality filter only (qfilt)', value=T
 cell_dropdown = pn.widgets.Select(name='Highlight cell', options={'(none)': None}, value=None, width=200)
 # Same toggle/options/default (raw, uncorrected) as `interactive_explorer.py`'s
 # `cellclass_correction_dropdown` -- applies `baden16_utils.correct_probs_by_cellclass` to
-# `cell_list_pane`'s top-2 group-probability bars (see `top2_group_probs`).
+# `cell_list_pane`'s predicted-type bars (see `top2_cluster_probs`/`top2_group_probs`).
 CELLCLASS_CORRECTION_OPTIONS = {'Raw model prediction': False, 'Corrected by Cell Class (RGC vs. dAC)': True}
 cellclass_correction_dropdown = pn.widgets.Select(name='Predicted type', options=CELLCLASS_CORRECTION_OPTIONS,
                                                   value=False, width=220)

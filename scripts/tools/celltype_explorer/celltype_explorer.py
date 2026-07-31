@@ -58,7 +58,7 @@ import pandas as pd
 import panel as pn
 import plotly.graph_objects as go
 
-from eyewire2_functional_analysis import data_loader, plot_morph, plot_traces, registration, style
+from eyewire2_functional_analysis import baden16_utils, data_loader, plot_morph, plot_traces, registration, style
 from eyewire2_functional_analysis.ds import MB_DIRS, MB_DIRS_SYMBOLS_D_UP
 from eyewire2_functional_analysis.space_mapping import align_and_place_skel
 
@@ -347,14 +347,46 @@ def row_color(row):
     return TIME_CMAP(TIME_NORM(FIELD_CHIRP_T0[row['field']]))
 
 
+# `group_id` per entry of `baden16_utils.BADEN_CLUSTER_INFO`, in the same (first-occurrence)
+# order `baden16_utils.probs_per_cluster_to_level_probs` builds its `group_probs` list in --
+# zipped against that list below to recover each group's numeric ID, since that function
+# itself only returns `(name, supergroup, prob)` tuples.
+_GROUP_IDS_IN_LEVEL_PROBS_ORDER = list(dict.fromkeys(
+    baden16_utils.BADEN_CLUSTER_INFO[:, 2].astype(int)))
+
+
+def top2_group_probs(row, correct_by_cellclass=False):
+    """The predicted-type probability distribution over the 46 Baden et al. 2016 functional
+    groups for `row` (from its `probs_per_cluster` cluster-level vector, aggregated via
+    `baden16_utils.probs_per_cluster_to_level_probs` -- see `plot_morph.
+    plot_type_prediction_bars`, which uses the same aggregation for its group-level bar),
+    sorted descending and truncated to the top 2.
+
+    `correct_by_cellclass` matches `interactive_explorer.py`'s `cellclass_correction_dropdown`/
+    `plot_morph.plot_type_prediction_bars`: if set, `row['probs_per_cluster']` is first passed
+    through `baden16_utils.correct_probs_by_cellclass(row['Cell Class'], ...)`, zeroing out/
+    renormalizing probability mass inconsistent with the cell's known ground-truth `Cell Class`
+    (RGC vs. dAC) -- the classifier confuses the two fairly often. Off by default, same as there.
+
+    Returns a list of up to 2 ``(group_id, supergroup, prob)`` tuples (fewer only if a cell
+    somehow has fewer than 2 groups with nonzero probability mass)."""
+    probs = row['probs_per_cluster']
+    if correct_by_cellclass:
+        probs = baden16_utils.correct_probs_by_cellclass(row['Cell Class'], probs)
+    _, group_probs, _ = baden16_utils.probs_per_cluster_to_level_probs(probs)
+    group_probs = [(gid, sg, p) for gid, (_, sg, p) in zip(_GROUP_IDS_IN_LEVEL_PROBS_ORDER, group_probs) if p > 0]
+    group_probs.sort(key=lambda entry: entry[2], reverse=True)
+    return group_probs[:2]
+
+
 # IPL depth range (um) the cached per-cell profiles (`data_loader.load_ipl_profile`) were
 # computed over -- matches `plot_morph.compute_ipl_z_profile`'s own default and
 # `scripts/preprocessing/compute_ipl_profiles.py`, which produced the cache.
 IPL_ZLIM = (-30, 30)
-# CSS pixel size of the (Plotly) IPL-overlay pane -- same width as the morphology pane
-# above it (they sit in the same column), a good deal shorter since a depth profile only
-# needs a tall-and-narrow plot, not a square one.
-IPL_PLOTLY_SIZE = dict(width=MORPH_PLOTLY_SIZE['width'], height=220)
+# CSS pixel size of the (Plotly) IPL-overlay pane -- half the width of the morphology pane
+# above it (they sit in the same column, left-aligned), a good deal shorter since a depth
+# profile only needs a tall-and-narrow plot, not a square one.
+IPL_PLOTLY_SIZE = dict(width=MORPH_PLOTLY_SIZE['width'] // 2, height=220)
 
 
 def make_ipl_figure(sub, selected_key):
@@ -727,6 +759,72 @@ def render_traces_fig(sub, selected_key):
     return fig
 
 
+# Rendered CSS pixel width of `group_prob_bar_html`'s bar (excludes the field/ROI/cell-type
+# columns) -- generous, since a narrow bar leaves too little room for its group-ID labels to
+# be legible once a segment's probability share is small.
+GROUP_PROB_BAR_WIDTH_PX = 400
+
+
+def group_prob_bar_html(row, correct_by_cellclass=False, height_px=18, width_px=GROUP_PROB_BAR_WIDTH_PX):
+    """A horizontal stacked-bar HTML snippet, always spanning the full 0-100% probability
+    range (2 coloured segments for `row`'s top-2 predicted functional groups, plus a gray
+    remainder segment covering the rest of the mass, together always summing to `width_px`
+    -- flexbox-based, no plotting library involved, cheap to build per row of a long list),
+    each segment sized by its probability and labelled with its (numeric) group ID, coloured
+    by its parent supergroup (`plot_morph.SUPERGROUP_COLORS`, the same convention `plot_morph.
+    plot_type_prediction_bars` uses) -- so the same supergroup reads as the same colour here
+    and in `interactive_explorer.py`'s per-cell prediction bars. `correct_by_cellclass` is
+    forwarded to `top2_group_probs`."""
+    segments = top2_group_probs(row, correct_by_cellclass=correct_by_cellclass)
+    spans = []
+    for group_id, supergroup, prob in segments:
+        color = plot_morph.SUPERGROUP_COLORS.get(supergroup, '#999999')
+        spans.append(
+            f'<div title="Group {group_id} ({supergroup}): {prob:.0%}" '
+            f'style="flex:{max(prob, 0.001)}; background:{color}; color:white; '
+            f'display:flex; align-items:center; justify-content:center; overflow:hidden; '
+            f'font-size:10px; white-space:nowrap;">{group_id}</div>'
+        )
+    remainder = 1.0 - sum(p for _, _, p in segments)
+    if remainder > 0:
+        spans.append(f'<div style="flex:{remainder}; background:#e0e0e0;"></div>')
+    return (f'<div style="display:flex; width:{width_px}px; height:{height_px}px; '
+            f'border-radius:3px; overflow:hidden;">{"".join(spans)}</div>')
+
+
+def render_cell_list_html(sub, selected_key, correct_by_cellclass=False):
+    """HTML table listing every row of `sub` -- field, ROI number, morphological cell type,
+    and its top-2 predicted functional-group probabilities as a horizontal stacked bar
+    (`group_prob_bar_html`) -- below the response-overlay panels (`render_traces_fig`).
+
+    `selected_key` (a `df` row index, or `None`) highlights that row (light-blue background),
+    matching the highlight-on-selection convention used across the other panels, so the
+    selected cell can also be found by scrolling this list. `correct_by_cellclass` is
+    forwarded to `group_prob_bar_html`/`top2_group_probs`."""
+    rows_html = []
+    for key, row in sub.iterrows():
+        bg = '#eaf2fb' if key == selected_key else 'transparent'
+        rows_html.append(
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:2px 8px;">{row["field"]}</td>'
+            f'<td style="padding:2px 8px;">{row["roi_id"]}</td>'
+            f'<td style="padding:2px 8px;">{row["Cell Type"]}</td>'
+            f'<td style="padding:2px 8px;">{group_prob_bar_html(row, correct_by_cellclass=correct_by_cellclass)}</td>'
+            f'</tr>'
+        )
+    if not rows_html:
+        return '<p>No cells match this selection.</p>'
+    return (
+        '<div style="max-height:300px; overflow-y:auto;">'
+        '<table style="border-collapse:collapse; font-size:12px; width:100%;">'
+        '<thead><tr style="text-align:left;">'
+        '<th style="padding:2px 8px;">Field</th><th style="padding:2px 8px;">ROI</th>'
+        '<th style="padding:2px 8px;">Cell type</th>'
+        '<th style="padding:2px 8px;">Top-2 predicted functional group (0-100%)</th>'
+        '</tr></thead><tbody>' + ''.join(rows_html) + '</tbody></table></div>'
+    )
+
+
 # %% [markdown]
 # ## Widgets
 
@@ -743,6 +841,12 @@ qfilt_checkbox = pn.widgets.Checkbox(name='Quality filter only (qfilt)', value=T
 # filtered `sub` -- an alternative, keyboard/list-friendly way to pick the highlighted cell
 # alongside clicking it in `morph_pane`/`ipl_pane`.
 cell_dropdown = pn.widgets.Select(name='Highlight cell', options={'(none)': None}, value=None, width=200)
+# Same toggle/options/default (raw, uncorrected) as `interactive_explorer.py`'s
+# `cellclass_correction_dropdown` -- applies `baden16_utils.correct_probs_by_cellclass` to
+# `cell_list_pane`'s top-2 group-probability bars (see `top2_group_probs`).
+CELLCLASS_CORRECTION_OPTIONS = {'Raw model prediction': False, 'Corrected by Cell Class (RGC vs. dAC)': True}
+cellclass_correction_dropdown = pn.widgets.Select(name='Predicted type', options=CELLCLASS_CORRECTION_OPTIONS,
+                                                  value=False, width=220)
 add_to_table_button = pn.widgets.Button(name='Add to table', button_type='primary', width=120)
 
 # The currently-selected cell (a `df` row index, or `None`) -- click a cell in `morph_pane`/
@@ -811,14 +915,19 @@ title_pane = pn.pane.Markdown(
 # is selected, matching the tool's existing "no selection" states elsewhere (e.g. all cells
 # at full opacity in make_morph_figure).
 selection_pane = pn.pane.Markdown('', margin=(0, 0, 0, 10))
+# Per-cell list (field/ROI/cell type + top-2 predicted functional-group probability bar)
+# below the response-overlay panels -- see `render_cell_list_html`.
+cell_list_pane = pn.pane.HTML(
+    render_cell_list_html(_initial_sub, selected_key, correct_by_cellclass=cellclass_correction_dropdown.value),
+    margin=(10, 0, 0, 0))
 
 
 def full_redraw():
     """The only place that actually redraws `morph_pane`/`ipl_pane`/`traces_pane`/
-    `title_pane`/`selection_pane`/`cell_dropdown` -- every widget/click handler below just
-    updates `selected_key` (or a filter widget) and calls this, so there's exactly one code
-    path that rebuilds the view, regardless of how the change was triggered (matches
-    `interactive_explorer.py`'s `select_index`)."""
+    `title_pane`/`selection_pane`/`cell_dropdown`/`cell_list_pane` -- every widget/click
+    handler below just updates `selected_key` (or a filter widget) and calls this, so
+    there's exactly one code path that rebuilds the view, regardless of how the change was
+    triggered (matches `interactive_explorer.py`'s `select_index`)."""
     global CURVE_TO_KEY, IPL_CURVE_TO_KEY, _updating_cell_dropdown
     field = field_dropdown.value
     sub = selected_cells(field, celltype_dropdown.value, qfilt_checkbox.value, cellclass_dropdown.value)
@@ -845,6 +954,9 @@ def full_redraw():
         selection_pane.object = f"**Field:** {sel_row['field']}  \n**ROI:** {sel_row['roi_id']}"
     else:
         selection_pane.object = ''
+
+    cell_list_pane.object = render_cell_list_html(sub, selected_key,
+                                                  correct_by_cellclass=cellclass_correction_dropdown.value)
 
     # Rebuild to match `sub` (options change with every filter change) and reflect
     # `selected_key` (set here whether the selection came from `cell_dropdown` itself, a
@@ -932,6 +1044,10 @@ qfilt_checkbox.param.watch(on_filter_change, 'value')
 morph_pane.param.watch(on_morph_click, 'click_data')
 ipl_pane.param.watch(on_ipl_click, 'click_data')
 cell_dropdown.param.watch(on_cell_dropdown_change, 'value')
+# Only `cell_list_pane`'s bars depend on this (unlike the filter widgets above), but there's
+# a single `full_redraw` code path, so it also gets called here -- it doesn't reset
+# `selected_key`, since toggling the correction isn't a filter change.
+cellclass_correction_dropdown.param.watch(lambda event: full_redraw(), 'value')
 
 # %% [markdown]
 # ### "Add to table" logging
@@ -996,11 +1112,12 @@ log_save_button.on_click(on_log_save_click)
 layout = pn.Column(
     title_pane,
     pn.Row(field_dropdown, cellclass_dropdown, celltype_dropdown, qfilt_checkbox, cell_dropdown,
-          add_to_table_button),
+          cellclass_correction_dropdown, add_to_table_button),
     # `margin=0` on the panes themselves plus here on their Row -- morphology and the
     # response panels sit right next to each other, no gap. `selection_pane`/`ipl_pane` sit
     # below the morphology pane, in its own column, so they don't affect that spacing.
     pn.Row(pn.Column(morph_pane, selection_pane, ipl_pane, margin=0), traces_pane, margin=0),
+    cell_list_pane,
     log_modal,
     margin=(0, 0, 0, 32),
 )

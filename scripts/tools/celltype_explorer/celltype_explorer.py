@@ -59,6 +59,7 @@ import numpy as np
 import pandas as pd
 import panel as pn
 import plotly.graph_objects as go
+from scipy.spatial import ConvexHull, QhullError
 
 from eyewire2_functional_analysis import baden16_utils, data_loader, plot_traces, registration, style
 from eyewire2_functional_analysis.ds import MB_DIRS, MB_DIRS_SYMBOLS_D_UP
@@ -229,7 +230,34 @@ def field_outline_rect(field):
     return xs, ys
 
 
-def make_morph_figure(sub, field, selected_key):
+MORPH_VIEW_OPTIONS = ['Skeletons', 'Dendritic hull']
+
+
+def dendritic_hull_xy(skel):
+    """``(hull_x, hull_y)`` -- a closed polygon outline (last point repeats the first) of
+    the convex hull of `skel`'s dendritic nodes (xy projection), excluding axon nodes
+    (`skel.ntype == 2`, the same convention `plot_morph.plot_morph`'s auto-fit radius
+    uses) when node-type info is available, so the hull reflects the *dendritic* arbor's
+    footprint, not one stretched out by a far-reaching axon. Returns `None` if fewer than
+    3 (non-collinear) points remain -- too degenerate for a hull."""
+    pts = skel.nodes[:, :2]
+    if skel.ntype is not None:
+        non_axon = skel.ntype != 2
+        if non_axon.any():
+            pts = pts[non_axon]
+    if len(pts) < 3:
+        return None
+    try:
+        hull = ConvexHull(pts)
+    except QhullError:
+        return None
+    hull_pts = pts[hull.vertices]
+    hx = list(hull_pts[:, 0]) + [hull_pts[0, 0]]
+    hy = list(hull_pts[:, 1]) + [hull_pts[0, 1]]
+    return hx, hy
+
+
+def make_morph_figure(sub, field, selected_key, view_mode='Skeletons'):
     """Plotly figure overlaying every row in `sub`'s EM skeleton at its true 2p position
     (via `align_and_place_skel`), colour-coded by field, and click-selectable (see
     `on_morph_click`). Cells without a skeleton file are still marked (as an 'x') at their
@@ -241,10 +269,23 @@ def make_morph_figure(sub, field, selected_key):
     (`field_outline_rect`) -- but the view always zooms dynamically to fit every plotted
     morphology (with a margin) rather than to the whole retina/outline, so cells are
     legible regardless of how tightly they cluster, whether that's one field or all five.
+    The fit is always to each cell's *full* skeleton (every node, including axon), never to
+    just what `view_mode` actually draws -- so switching `view_mode` alone never changes
+    the axis range, even though a dendritic hull's own extent (axon excluded) is a subset
+    of the full skeleton's.
+
+    `view_mode` (one of `MORPH_VIEW_OPTIONS`) switches between drawing each cell's full
+    skeleton (`'Skeletons'`, the default) or just the convex hull of its dendritic arbor
+    (`'Dendritic hull'`, `dendritic_hull_xy` -- a translucent filled polygon, cheaper to
+    read at a glance when overlaying many cells at once, at the cost of the actual branch
+    structure). Cells whose skeleton is too degenerate for a hull (fewer than 3 non-
+    collinear dendritic nodes) just have no hull drawn in that mode (still counted in the
+    title's "n with skeleton" and still part of the axis-range fit, same as any other cell
+    with a skeleton file).
 
     If `selected_key` (a `df` row index, or `None`) names one of `sub`'s cells, that cell's
-    skeleton/marker are drawn solid black (same line width as everyone else -- only colour
-    changes) and every other cell is dimmed (rather than converted to gray, so the
+    skeleton/hull/marker are drawn solid black (same line width as everyone else -- only
+    colour changes) and every other cell is dimmed (rather than converted to gray, so the
     field-colour legend stays meaningful); with no selection, all cells use their normal
     field colour at full opacity.
 
@@ -292,17 +333,40 @@ def make_morph_figure(sub, field, selected_key):
         x, y = row['temporal_nasal_pos_um'], row['ventral_dorsal_pos_um']
 
         if row['skel'] is not None:
-            n_with_skel += 1
             skel = align_and_place_skel(row['skel'], reg, field=row['field'], target_xy=(x, y))
-            seg_x, seg_y = [], []
-            for (x0, y0), (x1, y1) in zip(skel.nodes[skel.edges[:, 0], :2], skel.nodes[skel.edges[:, 1], :2]):
-                seg_x += [x0, x1, None]
-                seg_y += [y0, y1, None]
-            fig.add_trace(go.Scattergl(x=seg_x, y=seg_y, mode='lines', line=dict(color=color, width=1),
-                                      opacity=opacity, hoverinfo='none', showlegend=False))
-            curve_to_key[len(fig.data) - 1] = key
+            n_with_skel += 1
+            # Always fit the view to the *full* skeleton (all nodes, including axon), not
+            # to whatever's actually drawn below -- otherwise switching `view_mode` would
+            # itself change the axis range (a dendritic hull's own extent, with the axon
+            # excluded, is a la strict subset of the full skeleton's).
             xs_cells += list(skel.nodes[:, 0])
             ys_cells += list(skel.nodes[:, 1])
+
+            if view_mode == 'Dendritic hull':
+                hull_xy = dendritic_hull_xy(skel)
+                if hull_xy is not None:
+                    hx, hy = hull_xy
+                    # `fillcolor`'s own alpha (independent of the trace-level `opacity`
+                    # below, which instead handles selection-dimming) keeps the fill
+                    # translucent while the outline stays fully opaque, so overlapping
+                    # hulls remain distinguishable. A selected hull gets a more opaque
+                    # fill (not a thicker outline -- matching `make_morph_figure`'s
+                    # skeleton-mode convention of colour-only, not width, emphasis).
+                    fill_alpha = 0.4 if is_selected else 0.18
+                    fill_rgba = 'rgba({},{},{},{})'.format(*(int(c * 255) for c in mcolors.to_rgb(color)), fill_alpha)
+                    fig.add_trace(go.Scattergl(
+                        x=hx, y=hy, mode='lines', fill='toself', fillcolor=fill_rgba,
+                        line=dict(color=color, width=1),
+                        opacity=opacity, hoverinfo='none', showlegend=False))
+                    curve_to_key[len(fig.data) - 1] = key
+            else:
+                seg_x, seg_y = [], []
+                for (x0, y0), (x1, y1) in zip(skel.nodes[skel.edges[:, 0], :2], skel.nodes[skel.edges[:, 1], :2]):
+                    seg_x += [x0, x1, None]
+                    seg_y += [y0, y1, None]
+                fig.add_trace(go.Scattergl(x=seg_x, y=seg_y, mode='lines', line=dict(color=color, width=1),
+                                          opacity=opacity, hoverinfo='none', showlegend=False))
+                curve_to_key[len(fig.data) - 1] = key
         else:
             xs_cells.append(x)
             ys_cells.append(y)
@@ -843,15 +907,23 @@ def render_cell_list_html(sub, selected_key, correct_by_cellclass=False):
     `selected_key` (a `df` row index, or `None`) highlights that row (light-blue background),
     matching the highlight-on-selection convention used across the other panels, so the
     selected cell can also be found by scrolling this list. `correct_by_cellclass` is
-    forwarded to `cluster_prob_bar_html`."""
+    forwarded to `cluster_prob_bar_html`.
+
+    Rows that fail the response-quality filter (`row['qfilt']` False -- i.e. would be
+    excluded if `qfilt_checkbox` were checked, regardless of its actual current value here)
+    have their Field/ROI/Cell type text grayed out, so a cell whose predicted-type bar can't
+    be trusted as much stands out at a glance without needing to actually filter it out of
+    the list."""
     rows_html = []
     for key, row in sub.iterrows():
         bg = '#eaf2fb' if key == selected_key else 'transparent'
+        name_color = 'inherit' if row['qfilt'] else '#999999'
+        name_title = '' if row['qfilt'] else ' title="Did not pass the response-quality filter (qfilt)"'
         rows_html.append(
             f'<tr style="background:{bg};">'
-            f'<td style="padding:2px 8px;">{row["field"]}</td>'
-            f'<td style="padding:2px 8px;">{row["roi_id"]}</td>'
-            f'<td style="padding:2px 8px;">{row["Cell Type"]}</td>'
+            f'<td style="padding:2px 8px; color:{name_color};"{name_title}>{row["field"]}</td>'
+            f'<td style="padding:2px 8px; color:{name_color};"{name_title}>{row["roi_id"]}</td>'
+            f'<td style="padding:2px 8px; color:{name_color};"{name_title}>{row["Cell Type"]}</td>'
             f'<td style="padding:2px 8px;">{cluster_prob_bar_html(row, correct_by_cellclass=correct_by_cellclass)}</td>'
             f'</tr>'
         )
@@ -880,6 +952,11 @@ celltype_dropdown = pn.widgets.Select(name='Morphological cell type',
                                        options=CELL_TYPES_BY_CLASS['RGC'], value=CELL_TYPES_BY_CLASS['RGC'][0],
                                        width=260)
 qfilt_checkbox = pn.widgets.Checkbox(name='Quality filter only (qfilt)', value=True)
+# Switches `morph_pane` between full skeletons and just their dendritic-hull outline (see
+# `make_morph_figure`'s `view_mode`) -- a display choice, not a data filter, so changing it
+# doesn't reset `selected_key` (unlike the filter widgets above).
+morph_view_dropdown = pn.widgets.Select(name='Morphology view', options=MORPH_VIEW_OPTIONS,
+                                        value=MORPH_VIEW_OPTIONS[0], width=160)
 # Options rebuilt on every `full_redraw` (see `cell_dropdown_options`) to match the current
 # filtered `sub` -- an alternative, keyboard/list-friendly way to pick the highlighted cell
 # alongside clicking it in `morph_pane`/`ipl_pane`.
@@ -937,7 +1014,8 @@ def empty_morph_figure():
 _initial_sub = selected_cells(field_dropdown.value, celltype_dropdown.value, qfilt_checkbox.value,
                                cellclass_dropdown.value)
 if len(_initial_sub):
-    _initial_morph_fig, CURVE_TO_KEY = make_morph_figure(_initial_sub, field_dropdown.value, selected_key)
+    _initial_morph_fig, CURVE_TO_KEY = make_morph_figure(_initial_sub, field_dropdown.value, selected_key,
+                                                         view_mode=morph_view_dropdown.value)
     _initial_ipl_fig, IPL_CURVE_TO_KEY = make_ipl_figure(_initial_sub, selected_key)
 else:
     _initial_morph_fig, CURVE_TO_KEY = empty_morph_figure()
@@ -976,7 +1054,7 @@ def full_redraw():
     sub = selected_cells(field, celltype_dropdown.value, qfilt_checkbox.value, cellclass_dropdown.value)
 
     if len(sub):
-        morph_fig, CURVE_TO_KEY = make_morph_figure(sub, field, selected_key)
+        morph_fig, CURVE_TO_KEY = make_morph_figure(sub, field, selected_key, view_mode=morph_view_dropdown.value)
         ipl_fig, IPL_CURVE_TO_KEY = make_ipl_figure(sub, selected_key)
     else:
         morph_fig, CURVE_TO_KEY = empty_morph_figure()
@@ -1084,6 +1162,9 @@ field_dropdown.param.watch(on_filter_change, 'value')
 cellclass_dropdown.param.watch(on_cellclass_change, 'value')
 celltype_dropdown.param.watch(on_filter_change, 'value')
 qfilt_checkbox.param.watch(on_filter_change, 'value')
+# A display choice, not a filter -- redraws (to pick up the new view_mode) without
+# resetting selected_key, unlike the filter widgets above.
+morph_view_dropdown.param.watch(lambda event: full_redraw(), 'value')
 morph_pane.param.watch(on_morph_click, 'click_data')
 ipl_pane.param.watch(on_ipl_click, 'click_data')
 cell_dropdown.param.watch(on_cell_dropdown_change, 'value')
@@ -1154,8 +1235,8 @@ log_save_button.on_click(on_log_save_click)
 
 layout = pn.Column(
     title_pane,
-    pn.Row(field_dropdown, cellclass_dropdown, celltype_dropdown, qfilt_checkbox, cell_dropdown,
-          cellclass_correction_dropdown, add_to_table_button),
+    pn.Row(field_dropdown, cellclass_dropdown, celltype_dropdown, qfilt_checkbox, morph_view_dropdown,
+          cell_dropdown, cellclass_correction_dropdown, add_to_table_button),
     # `margin=0` on the panes themselves plus here on their Row -- morphology and the
     # response panels sit right next to each other, no gap. `selection_pane`/`ipl_pane` sit
     # below the morphology pane, in its own column, so they don't affect that spacing.

@@ -124,3 +124,5 @@ ENV/
 !data/stimuli/global_chirp/chirp1000_setup3_movie_and_trigger.npz
 !data/stimuli/moving_bar/DS_setup3_movie_and_trigger.npz
 !*/README.md
+data/classifier-training/
+scripts/analysis/reproduce_classifier

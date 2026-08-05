@@ -15,7 +15,7 @@ DATA_SWC = os.path.join(DATA_ROOT, "swc")
 DATA_REGISTRATION = os.path.join(DATA_ROOT, "registration")
 DATA_IPL_PROFILES = os.path.join(DATA_ROOT, "ipl_profiles")
 
-MAIN_ALL_CELLS_SHEET = "Eyewire II Proofread Cells Main List - All Cells 2026-07-03.csv"
+MAIN_ALL_CELLS_SHEET = "Eyewire II Proofread Cells Main List - All Cells 2026-08-04.csv"
 MAP_SHEET = "Eyewire II Proofread Cells Main List - EM-2p-mapping 2026-07-08e v2-final.csv"
 EM_2P_REGISTRATION_FILE = "em_2p_registration.yaml"
 
@@ -271,25 +271,60 @@ class LazySkeleton:
         return f"LazySkeleton({self.swc_path!r}, {state})"
 
 
-def add_skels(df: pd.DataFrame, swc_dir: str | Path | None = DATA_SWC, inplace: bool = False) -> pd.DataFrame:
-    """Add ``swc_path``/``skel`` columns, deferring the actual SWC parse until first use.
+def add_skels(df: pd.DataFrame, swc_dir: str | Path | None = DATA_SWC, inplace: bool = False,
+              fallback_seg_col: str | None = 'Proofread SegID') -> pd.DataFrame:
+    """Add ``swc_path``/``swc_segid_source``/``skel`` columns, deferring the actual SWC parse
+    until first use.
 
     ``skel`` holds a :class:`LazySkeleton` per row (or ``None`` if no SWC file
-    exists for that row's ``Latest SegID``) rather than an eagerly-loaded
+    was found for that row) rather than an eagerly-loaded
     ``skeliner.core.Skeleton`` -- parsing hundreds of SWC files up front is
     slow and often wasted when only a handful of rows end up being inspected.
 
+    A row's SWC is looked up as ``{Latest SegID}.swc`` first. When that file is
+    *absent* (as opposed to the ID itself being missing, which
+    ``load_df_rois_morph``'s ``seg_col_master`` fold already handles), the
+    lookup falls back to ``{fallback_seg_col}.swc``. Skeletonization is keyed to
+    whichever segment ID was current when it ran, so a cell whose ``Latest
+    SegID`` advanced past the last skeletonization pass often still has an SWC
+    filed under its ``Proofread SegID`` -- 8 of the 29 otherwise-skeleton-less
+    ROI-matched cells, as of the 2026-08-04 master list. That fallback SWC is by
+    construction an *older* proofreading state of the cell, so
+    ``swc_segid_source`` records which column each row's file actually came from
+    (``None`` where no file was found), letting callers spot-check or exclude
+    the fallbacks. Pass ``fallback_seg_col=None`` to disable the fallback and
+    consider only ``Latest SegID``.
+
     Args:
         df: DataFrame with a ``Latest SegID`` column.
-        swc_dir: Directory containing ``{Latest SegID}.swc`` files.
+        swc_dir: Directory containing ``{seg_id}.swc`` files.
         inplace: If ``False`` (default), operate on a copy of `df`.
+        fallback_seg_col: Column holding the segment ID to fall back to when no
+            SWC exists for ``Latest SegID``. Ignored if absent from `df`.
 
     Returns:
-        pandas.DataFrame: `df` with ``swc_path`` and ``skel`` columns added.
+        pandas.DataFrame: `df` with ``swc_path``, ``swc_segid_source`` and
+        ``skel`` columns added. ``swc_path`` points at the resolved file, or at
+        the (nonexistent) ``Latest SegID`` path when nothing was found.
     """
     if not inplace:
         df = df.copy()
 
-    df['swc_path'] = df['Latest SegID'].apply(lambda x: os.path.join(swc_dir, f"{x}.swc"))
-    df['skel'] = [LazySkeleton(p) if os.path.isfile(p) else None for p in df['swc_path']]
+    def swc_path_for(seg_id):
+        return os.path.join(swc_dir, f"{seg_id}.swc")
+
+    paths = [swc_path_for(seg_id) for seg_id in df['Latest SegID']]
+    sources = ['Latest SegID' if os.path.isfile(p) else None for p in paths]
+
+    if fallback_seg_col is not None and fallback_seg_col in df.columns:
+        for i, fallback_id in enumerate(df[fallback_seg_col]):
+            if sources[i] is not None or pd.isna(fallback_id):
+                continue
+            fallback_path = swc_path_for(fallback_id)
+            if os.path.isfile(fallback_path):
+                paths[i], sources[i] = fallback_path, fallback_seg_col
+
+    df['swc_path'] = paths
+    df['swc_segid_source'] = sources
+    df['skel'] = [LazySkeleton(p) if src is not None else None for p, src in zip(paths, sources)]
     return df

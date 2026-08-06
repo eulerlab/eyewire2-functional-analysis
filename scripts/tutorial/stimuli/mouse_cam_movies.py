@@ -37,7 +37,7 @@ os.makedirs(FIG_DIR, exist_ok=True)
 # %%
 # You have to run mc_to_numpy.py first, before loading the mc array
 
-mc15 = np.load("../../../data/stimuli/mouse_cam_movies/mc_arrays/MC15.npy")
+mc15 = np.load(os.path.join(data_loader.SHARED_DATA_ROOT, "stimuli", "mouse_cam_movies", "mc_arrays", "MC15.npy"))
 assert mc15.shape[0] == 123 * 5 * 30
 mc15.shape
 

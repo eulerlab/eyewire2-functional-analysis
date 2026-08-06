@@ -34,12 +34,19 @@ dev = [
     "gcl-classifier>=0.1.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["eyewire2_functional_analysis*"]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+[tool.uv.sources]
+# On Windows, the PyPI pywarper release can crash: when the optional scikit-sparse
+# speedup isn't installed, it prints a non-ASCII fallback warning that a default
+# (cp1252) Windows console can't encode. The local checkout has that fixed, so use
+# it there; everywhere else stays on the normal PyPI release.
+pywarper = [
+    { path = "../pywarper", editable = true, marker = "sys_platform == 'win32'" },
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]

@@ -15,14 +15,14 @@ The following files are included:
 - an interactive EM ↔ function explorer tool [scripts/tools/interactive_explorer/](scripts/tools/interactive_explorer/)
 - analysis scripts [scripts/analysis/*.py](scripts/analysis/)
 - preprocessing scripts, e.g. for the 2P-to-EM coordinate registration [scripts/preprocessing/*.py](scripts/preprocessing/)
-- spreadsheet data that are needed to map 2p to EM data (proofread cell main list, 2P-to-EM ROI mapping) in [data/spreadsheets/*](data/spreadsheets/)
-- pre-processed calcium traces from recordings over five recording fields, stored as parquet files and downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) (see [data/data-2p/README.md](data/data-2p/README.md))
+- spreadsheet data that are needed to map 2p to EM data (proofread cell main list, 2P-to-EM ROI mapping), downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/spreadsheets) into the shared `eyewire2-data/spreadsheets/` folder (see [Downloading the data](#downloading-the-data) below)
+- pre-processed calcium traces from recordings over five recording fields, stored as parquet files and downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) into `eyewire2-data/data-2p/`
 
 Scripts are plain `.py` files in [jupytext](https://jupytext.readthedocs.io/) "percent" format (`# %%` cell markers) rather than `.ipynb` notebooks — open them in Jupyter Lab to run them cell-by-cell like a notebook, or run them directly with `uv run python <script>.py`.
 
 Documentation is still incomplete:
-- a description of the 2P data can be found [here](data/data-2p/README.md).
-- a description of the stimuli can be found [here](data/stimuli/README.md).
+- a description of the 2P data can be found in `eyewire2-data/data-2p/README.md` (part of the downloaded dataset).
+- a description of the stimuli can be found in `eyewire2-data/data-2p/stimuli/README.md`.
 
 Feel free to open issues to ask questions and request features!
 
@@ -38,7 +38,25 @@ On the first call, `uv run` will install all dependencies into a `uv` virtual en
 
 ### Downloading the data
 
-The pre-processed 2P data is not included in this repository — download it from the [eyewire2-data Hugging Face dataset](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) and place it in `data/data-2p/`. See [data/data-2p/README.md](data/data-2p/README.md) for details on the contents.
+The pre-processed 2P data, EM-2p mapping spreadsheets, and EM skeletons are not included in this repository. They live in a single `eyewire2-data` folder shared with [eyewire2-figures](https://github.com/eyewire2/eyewire2-figures), downloaded once from the [eyewire2-data Hugging Face dataset](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main) rather than duplicated per repo.
+
+By default, [data_config.yaml](data_config.yaml) (at this repo's root) expects that folder at `../huggingface/eyewire2-data` relative to this repo's root — i.e. inside a `huggingface/` folder that sits next to this repo (and next to `eyewire2-figures`):
+
+```text
+<parent>/
+├── eyewire2-functional-analysis/   <- this repo
+├── eyewire2-figures/
+└── huggingface/
+    └── eyewire2-data/
+        ├── data-2p/
+        ├── spreadsheets/
+        ├── swc/
+        └── ...
+```
+
+See `eyewire2-data/data-2p/README.md` (part of the downloaded dataset) for details on the `data-2p/` contents. If your `eyewire2-data` folder lives somewhere else, update the `root` path in [data_config.yaml](data_config.yaml) to match — `eyewire2_functional_analysis.data_loader` resolves `DATA_2P`/`DATA_SS`/`DATA_SWC` from there.
+
+Data specific to this repo (recording metadata, the fitted 2P↔EM registration, precomputed IPL profiles) stays local, in [data/](data/).
 
 ### Loading the data
 

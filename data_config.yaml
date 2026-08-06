@@ -1,0 +1,4 @@
+# Location of the shared eyewire2-data folder (downloaded from
+# huggingface.co/datasets/eulerlab/eyewire2-data), also used by eyewire2-figures.
+# Resolved relative to this repo's root (see eyewire2_functional_analysis/paths.py).
+root: "../huggingface/eyewire2-data"

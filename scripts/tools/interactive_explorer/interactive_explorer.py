@@ -607,7 +607,7 @@ STIM_MOVIE_NPZ = {
     'Chirp': ('global_chirp', 'chirp1000_setup3_movie_and_trigger.npz'),
     'DS': ('moving_bar', 'DS_setup3_movie_and_trigger.npz'),
 }
-MC_ARRAY_DIR = os.path.join(data_loader.DATA_ROOT, 'stimuli', 'mouse_cam_movies', 'mc_arrays')
+MC_ARRAY_DIR = os.path.join(data_loader.SHARED_DATA_ROOT, 'stimuli', 'mouse_cam_movies', 'mc_arrays')
 MC_FRAME_RATE_HZ = 30.0  # matches stimulus_tools.FRAMES_PER_SECOND
 
 _stim_npz_cache = {}
@@ -625,7 +625,7 @@ def load_stim_movie_npz(stim_type):
     """
     if stim_type not in _stim_npz_cache:
         subdir, fname = STIM_MOVIE_NPZ[stim_type]
-        movie = np.load(os.path.join(data_loader.DATA_ROOT, 'stimuli', subdir, fname))
+        movie = np.load(os.path.join(data_loader.SHARED_DATA_ROOT, 'stimuli', subdir, fname))
         trigger = movie['trigger']
         trigger0 = np.argmax(trigger) # Start stimulus at first trigger
         intensity = movie['stimulus'].mean(axis=(1, 2))[trigger0:, None]

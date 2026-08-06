@@ -35,8 +35,10 @@ import numpy as np
 # Set path to log file name and folder with `.smh` files
 
 # %%
-LOG_PATH = Path("../../data/20181011_182540.log")
-SMH_PATH = Path("../../data/smh/")
+from eyewire2_functional_analysis.data_loader import DATA_2P
+
+LOG_PATH = Path(DATA_2P) / "stimuli" / "20181011_182540.log"
+SMH_PATH = Path(DATA_2P) / "smh"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIG_DIR = os.path.join(HERE, "figures")
@@ -230,7 +232,7 @@ def time_to_seconds(t):
 
 
 # %%
-from eyewire2_functional_analysis.scanm import SMP
+from eyewire2_functional_analysis.scanm.scanm_smp import SMP
 
 nFiles = 0
 smh_files = list(SMH_PATH.glob("*.smh"))

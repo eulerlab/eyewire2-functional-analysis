@@ -123,10 +123,10 @@ df['swc_path'] = ''
 df['skel'] = None
 
 # %%
-from eyewire2_functional_analysis.data_loader import DATA_ROOT
+from eyewire2_functional_analysis.data_loader import DATA_SWC
 
 
-skel_dir = os.path.join(DATA_ROOT, 'swc')
+skel_dir = DATA_SWC
 
 
 # %%

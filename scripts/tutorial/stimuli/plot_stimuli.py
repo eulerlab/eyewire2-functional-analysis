@@ -18,10 +18,10 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 # %%
-from eyewire2_functional_analysis.data_loader import DATA_ROOT
+from eyewire2_functional_analysis.data_loader import SHARED_DATA_ROOT
 
 
-stim_dir = os.path.join(DATA_ROOT, 'stimuli')
+stim_dir = os.path.join(SHARED_DATA_ROOT, 'stimuli')
 os.listdir(stim_dir)
 
 HERE = os.path.dirname(os.path.abspath(__file__))

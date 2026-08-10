@@ -729,7 +729,7 @@ dev = [
     { name = "cell-mosaics" },
     { name = "gcl-classifier" },
     { name = "pywarper", version = "0.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
-    { name = "pywarper", version = "0.2.6", source = { editable = "../pywarper" }, marker = "sys_platform == 'win32'" },
+    { name = "pywarper", version = "0.2.6", source = { git = "https://github.com/berenslab/pywarper?branch=windows-fix#51758768d4de0fc1a451f2848cc86c13301cb8c5" }, marker = "sys_platform == 'win32'" },
     { name = "skeliner" },
 ]
 
@@ -762,7 +762,7 @@ dev = [
     { name = "cell-mosaics", specifier = ">=0.1.0" },
     { name = "gcl-classifier", specifier = ">=0.1.0" },
     { name = "pywarper", marker = "sys_platform != 'win32'", specifier = ">=0.2.5" },
-    { name = "pywarper", marker = "sys_platform == 'win32'", editable = "../pywarper" },
+    { name = "pywarper", marker = "sys_platform == 'win32'", git = "https://github.com/berenslab/pywarper?branch=windows-fix" },
     { name = "skeliner", specifier = ">=0.2.5" },
 ]
 
@@ -2780,7 +2780,7 @@ wheels = [
 [[package]]
 name = "pywarper"
 version = "0.2.6"
-source = { editable = "../pywarper" }
+source = { git = "https://github.com/berenslab/pywarper?branch=windows-fix#51758768d4de0fc1a451f2848cc86c13301cb8c5" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version < '3.14' and sys_platform == 'win32'",
@@ -2793,24 +2793,6 @@ dependencies = [
     { name = "skeliner" },
     { name = "watermark" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "alphashape", specifier = ">=1.3.1" },
-    { name = "ipykernel", marker = "extra == 'dev'" },
-    { name = "maturin", marker = "extra == 'dev'" },
-    { name = "numpy", specifier = ">=2.2.0" },
-    { name = "pygridfit", specifier = ">=0.1.5" },
-    { name = "pygridfit", extras = ["scikit-sparse"], marker = "extra == 'scikit-sparse'", specifier = ">=0.1.7" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "scikit-sparse", marker = "extra == 'scikit-sparse'", specifier = ">=0.5.0" },
-    { name = "scipy", specifier = ">=1.15.0" },
-    { name = "skeliner", specifier = ">=0.2.3" },
-    { name = "twine", marker = "extra == 'dev'" },
-    { name = "watermark", specifier = ">=2.5.0" },
-]
-provides-extras = ["dev", "scikit-sparse"]
 
 [[package]]
 name = "pywinpty"

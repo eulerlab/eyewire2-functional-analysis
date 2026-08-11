@@ -2,8 +2,10 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
-    "python_full_version >= '3.14'",
-    "python_full_version < '3.14'",
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version >= '3.14' and sys_platform != 'win32'",
+    "python_full_version < '3.14' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and sys_platform != 'win32'",
 ]
 
 [[package]]
@@ -726,7 +728,8 @@ dependencies = [
 dev = [
     { name = "cell-mosaics" },
     { name = "gcl-classifier" },
-    { name = "pywarper" },
+    { name = "pywarper", version = "0.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
+    { name = "pywarper", version = "0.2.6", source = { git = "https://github.com/berenslab/pywarper?branch=windows-fix#51758768d4de0fc1a451f2848cc86c13301cb8c5" }, marker = "sys_platform == 'win32'" },
     { name = "skeliner" },
 ]
 
@@ -758,7 +761,8 @@ requires-dist = [
 dev = [
     { name = "cell-mosaics", specifier = ">=0.1.0" },
     { name = "gcl-classifier", specifier = ">=0.1.0" },
-    { name = "pywarper", specifier = ">=0.2.5" },
+    { name = "pywarper", marker = "sys_platform != 'win32'", specifier = ">=0.2.5" },
+    { name = "pywarper", marker = "sys_platform == 'win32'", git = "https://github.com/berenslab/pywarper?branch=windows-fix" },
     { name = "skeliner", specifier = ">=0.2.5" },
 ]
 
@@ -2756,6 +2760,10 @@ wheels = [
 name = "pywarper"
 version = "0.2.6"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform != 'win32'",
+    "python_full_version < '3.14' and sys_platform != 'win32'",
+]
 dependencies = [
     { name = "alphashape" },
     { name = "numpy" },
@@ -2767,6 +2775,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/7c/b9/4066c4702380d3773fd6b444af6286eedce70e748cab49dcd3a74441d74a/pywarper-0.2.6.tar.gz", hash = "sha256:90136e2d5dfd8a8b9fb0c0dc34f9936318efb207e5e55af8a1c0e203c5d041e1", size = 1659577, upload-time = "2026-04-24T09:58:06.256Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/6b/016620b43fddd766d9b51b6b0d0f8d8ea0b5dc2cdace3d7c3d7c4c695450/pywarper-0.2.6-py3-none-any.whl", hash = "sha256:fc234ff7ff3471bd19cb33d63b0d73986b45560d12a00948cecfd26134b3f7ff", size = 45549, upload-time = "2026-04-24T09:58:04.863Z" },
+]
+
+[[package]]
+name = "pywarper"
+version = "0.2.6"
+source = { git = "https://github.com/berenslab/pywarper?branch=windows-fix#51758768d4de0fc1a451f2848cc86c13301cb8c5" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and sys_platform == 'win32'",
+]
+dependencies = [
+    { name = "alphashape" },
+    { name = "numpy" },
+    { name = "pygridfit" },
+    { name = "scipy" },
+    { name = "skeliner" },
+    { name = "watermark" },
 ]
 
 [[package]]

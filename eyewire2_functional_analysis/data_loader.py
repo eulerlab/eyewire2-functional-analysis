@@ -9,8 +9,8 @@ from eyewire2_functional_analysis.io import restore_numpy_arrays
 from eyewire2_functional_analysis.paths import PROJECT_ROOT
 
 
-def _load_shared_data_root():
-    """Resolve the shared eyewire2-data folder from data_config.yaml at the repo root.
+def _load_data_config():
+    """Load data_config.yaml at the repo root.
 
     Resolved relative to PROJECT_ROOT (this module's location), not the
     caller's working directory, so it works the same whether a script is run
@@ -18,13 +18,14 @@ def _load_shared_data_root():
     """
     config_path = os.path.join(PROJECT_ROOT, "data_config.yaml")
     with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    return os.path.abspath(os.path.join(PROJECT_ROOT, config["root"]))
+        return yaml.safe_load(f)
 
+
+_DATA_CONFIG = _load_data_config()
 
 # Data downloaded from the shared eyewire2-data Hugging Face dataset (also used by
 # eyewire2-figures) -- see data_config.yaml at the repo root.
-SHARED_DATA_ROOT = _load_shared_data_root()
+SHARED_DATA_ROOT = os.path.abspath(os.path.join(PROJECT_ROOT, _DATA_CONFIG["root"]))
 DATA_2P = os.path.join(SHARED_DATA_ROOT, "data-2p")
 DATA_SS = os.path.join(SHARED_DATA_ROOT, "spreadsheets")
 DATA_SWC = os.path.join(SHARED_DATA_ROOT, "swc")
@@ -35,8 +36,9 @@ DATA_ROOT = os.path.join(PROJECT_ROOT, "data")
 DATA_REGISTRATION = os.path.join(DATA_ROOT, "registration")
 DATA_IPL_PROFILES = os.path.join(DATA_ROOT, "ipl_profiles")
 
-MAIN_ALL_CELLS_SHEET = "Eyewire II Proofread Cells Main List - All Cells 2026-08-06.csv"
-MAP_SHEET = "Eyewire II Proofread Cells Main List - EM-2p-mapping 2026-08-06.csv"
+# Master spreadsheet filenames within DATA_SS -- dated/versioned, see data_config.yaml.
+MAIN_ALL_CELLS_SHEET = _DATA_CONFIG["main_all_cells_sheet"]
+MAP_SHEET = _DATA_CONFIG["map_sheet"]
 EM_2P_REGISTRATION_FILE = "em_2p_registration.yaml"
 
 

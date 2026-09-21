@@ -26,7 +26,7 @@ This project uses [uv](https://docs.astral.sh/uv/) for environment/dependency ma
   - `load_df_rois` / `load_df_fields` / `load_df_outline` / `load_all_dfs` — load the pre-processed parquet DataFrames (ROI-level traces+QC, field-level metadata, retinal outline). ROI-level data is split across 5 files (`GCL0`..`GCL4`, one per recording field) and concatenated; a `qfilt` quality-filter boolean column is added based on `bar_qidx`/`chirp_qidx` thresholds.
   - `load_df_rois_morph` — joins ROI-level functional data to the EM/morphology side: 2P ROI (`field`/`roi_id`) → EM-2p mapping sheet → nucleus ID → master proofread-cells spreadsheet. This is the bridge between functional (2P) and structural (EM) data; the underlying registration is fit in `scripts/preprocessing/em-2p-mapping.py`.
   - `add_skels` — attaches SWC skeletons (via `skeliner`) to a DataFrame keyed by `Latest SegID`.
-  - Master spreadsheet filenames are hardcoded as constants (`MAIN_ALL_CELLS_SHEET`, `MAP_SHEET`) and are dated/versioned — check `data/spreadsheets/` for the current filenames before changing these.
+  - Master spreadsheet filenames (`MAIN_ALL_CELLS_SHEET`, `MAP_SHEET`) are loaded from `data_config.yaml` at the repo root and are dated/versioned — check `data/spreadsheets/` for the current filenames before changing these.
 - `io.py` — `serialize_numpy_arrays`/`restore_numpy_arrays`: parquet can't store nested/multi-dim numpy arrays directly, so array columns are round-tripped through nested lists. `load_parquet_df` in `data_loader.py` calls `restore_numpy_arrays` automatically on every load.
 - `plot.py` — the bulk of plotting code: chirp/moving-bar stimulus response plots, direction-selectivity plots on morphology, mosaic/outline plots, scale bars, IPL profile plots, snippet/kernel helpers for moving-bar direction tuning (`get_dir_idx`, `sort_response_matrix`, `preprocess_mb_snippets`, `get_time_dir_kernels`).
 - `plot_dataframe.py` / `plot_traces.py` — higher-level plotting over whole DataFrames (grouped chirp+bar overview grids) and raw trace/trigger plotting.
@@ -48,7 +48,7 @@ Every script under `scripts/` is a `.py` file with `# %%` cell markers and jupyt
 ### `data/` — inputs and reference data (mostly gitignored)
 
 - `data/data-2p/` — the pre-processed parquet files (gitignored; download separately from the [eyewire2-data Hugging Face dataset](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) and place here). See `data/data-2p/README.md`.
-- `data/spreadsheets/` — master proofread-cell list and EM-2p mapping CSVs consumed by `data_loader.load_df_rois_morph` (filenames are dated; keep `MAIN_ALL_CELLS_SHEET`/`MAP_SHEET` in `paths.py`/`data_loader.py` in sync when these are updated).
+- `data/spreadsheets/` — master proofread-cell list and EM-2p mapping CSVs consumed by `data_loader.load_df_rois_morph` (filenames are dated; keep `main_all_cells_sheet`/`map_sheet` in `data_config.yaml` in sync when these are updated).
 - `data/stimuli/` — stimulus assets (QDSpy movies, moving-bar/global-chirp definitions); gitignored.
 - `data/smh/`, `data/swc/` — raw ScanM headers and SWC skeleton files.
 

@@ -93,6 +93,8 @@ Run it either:
 
 In addition to `data/data-2p/`, this tool needs the EM skeletons (`data/swc/`) and the master spreadsheets (`data/spreadsheets/`) to link 2P ROIs to their EM reconstructions.
 
+![Cell type explorer screenshot](images/celltype_explorer_screenshot.png)
+
 ### 2P ↔ EM coordinate registration
 
 [scripts/preprocessing/em-2p-mapping.py](scripts/preprocessing/em-2p-mapping.py) fits the rotation + isotropic scale (a global fit, plus a per-field refinement) that maps 2P ROI coordinates onto EM soma coordinates, using the known EM-cell ↔ 2P-ROI correspondences in the EM-2P mapping spreadsheet — fit independently in both directions (`2p_to_em` and `em_to_2p`), rather than guessing an angle or algebraically inverting one fit to get the other.

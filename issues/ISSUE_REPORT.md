@@ -9,6 +9,44 @@ master list).
 
 ---
 
+## Update — 2026-09-16 dataset bump (checked 2026-09-21)
+
+The repo picked up a new dataset (commit `4a1e0b1`, "update to new dataset
+improve explorer"): `data_config.yaml` now points `main_all_cells_sheet` /
+`map_sheet` at the **2026-09-16** master list and EM-2p mapping sheet, and all
+shared data (spreadsheets, `data-2p/`, `swc/`) moved out of this repo into a
+folder shared with `eyewire2-figures` (`../huggingface/eyewire2-data`, see
+`README.md`). Re-ran `load_df_rois_morph` + `add_skels` against the new sheets:
+
+- **§A and §B are fully resolved.** All **376/376** ROI-matched cells now have
+  a skeleton keyed directly to their current `Latest SegID` — **0** need the
+  `Proofread SegID` fallback added for the previous update. This isn't just the
+  master list swapping in already-existing SWCs: for 8 of the 21 previously-missing
+  cells the `Latest SegID` itself changed (proofreading advanced) and the new ID
+  already had a skeleton; for the rest, a new SWC simply appeared under the
+  same (previously missing) SegID. Either way, every cell that needed the
+  `Proofread SegID` fallback (§B, "older proofreading state") also now resolves
+  directly off `Latest SegID` — the "spot-check before trusting" caveat no
+  longer applies to any of them. TODO items 1–3 below are done; no action
+  needed. (GCL2-8's `eyewire2-figures` SWC copy in particular is moot — it's
+  now part of the shared store directly.)
+- **§C, §D, §E, §F re-checked against the new sheets: all still open, all
+  unchanged.** Every SegID/NucID named in those sections is identical in the
+  2026-09-16 sheets, the GCL0-10/GCL0-12 duplicate mapping is still there
+  verbatim, the three mosaic-violation pairs recompute to the same percentiles
+  (4th/15th/13th, n=201/107/63 — see §D), and the §E cells are all still
+  `Complete`/`Complete (cut off)` under the same SegIDs. These need the same
+  human decisions as before; nothing new to report there beyond a minor peer-count
+  note in §E.
+- **New, easy-to-spot but hard-to-explain gap:** 2 EM-2p mapping rows
+  (`GCL2-55`, `GCL3-46`) have a `Latest NucID` that isn't in *any* of the
+  master sheets — not "All Cells", not "All Glia", not "All BCs". This isn't
+  caused by the update (the same two NucIDs were already absent from the
+  2026-08-04 "All Cells" sheet), it just hadn't been written down. See new
+  **§G** below.
+
+---
+
 ## What was already fixed
 
 Three changes are applied and verified:
@@ -51,7 +89,11 @@ GCL3-56, GCL2-47) and three more by the fallback (GCL0-23, GCL2-21, GCL2-45).
 
 ---
 
-## A. Truly missing skeletons — 21 cells
+## A. Truly missing skeletons — 21 cells [RESOLVED by the 2026-09-16 dataset]
+
+**Resolved — see the update note at the top.** All 21 now have a skeleton
+under their (possibly updated) `Latest SegID`. Left as-is below for the
+record; no action needed.
 
 No SWC on disk under either `Latest SegID` or `Proofread SegID`. These need a
 skeletonization pass. Searched `data/`, `eyewire2-morphological-clustering`,
@@ -89,18 +131,22 @@ toward `Complete (cut off)` cells (8 of 29).
 **Note on #21 (GCL4-77):** `Latest SegID` and `Proofread SegID` are identical
 (`720575940587288061`), so the fallback can never help this one.
 
-### Quick win
+### Quick win — done
 
-GCL2-8's SWC exists at
-`eyewire2-figures/data/swc/720575940558177239.swc` (keyed by its current
-`Latest SegID`). That directory holds 447 SWCs vs 368 in
-`eyewire2-functional-analysis/data/swc`, with 79 not present here — worth
-diffing the two stores before commissioning new skeletonization, though it fills
-only this one gap in the ROI-matched set.
+GCL2-8's SWC (`720575940558177239.swc`) is now part of the shared
+`eyewire2-data/swc/` store used by both repos (370 files there as of
+2026-09-16), so the old "copy it over from `eyewire2-figures`" plan is moot —
+diffing the two separate stores no longer applies either, since there's only
+one store now.
 
 ---
 
-## B. Resolved via `Proofread SegID` fallback — 8 cells, need spot-checking
+## B. Resolved via `Proofread SegID` fallback — 8 cells, need spot-checking [SUPERSEDED by the 2026-09-16 dataset]
+
+**Superseded — see the update note at the top.** All 8 now resolve directly
+off `Latest SegID` in the new master list, so the "older proofreading state"
+caveat no longer applies to any of them; no spot-check needed. Left as-is
+below for the record.
 
 These now show a morphology, but the SWC is keyed to an **older proofreading
 state** of the cell (its `Latest SegID` has since advanced). Worth eyeballing
@@ -171,6 +217,11 @@ probably wrong.
 `Nuc Coords`, converting EM voxels at 16×16×40 nm — the same scale
 `scripts/preprocessing/em-2p-mapping.py` uses. n = 201 / 107 / 63 cells.)
 
+**Rechecked against the 2026-09-16 master list:** all three pairs' NucIDs,
+SegIDs, coords, and Cell Type labels are unchanged, and recomputing the NN
+percentiles gives the same numbers (n = 201/107/63, medians 32.9/40.1/44.8 µm,
+4th/15th/13th percentile) — still open, still needs human type review.
+
 **Action:** human type review on all 6. Note that 4 of the 6 have *no* human
 typer recorded and were auto-typed identically at high confidence — the machine
 labels agreeing is not independent evidence. The `EW3o` pair is the weakest
@@ -223,6 +274,12 @@ same-type ROI-matched peers. Sorted by deviation.
 **Caveat:** peer counts are small (1–11), so ratios against types with ≤3 peers
 (GCL3-51, GCL1-29, GCL1-3, GCL3-11, GCL3-26) are indicative, not conclusive.
 
+**Rechecked against the 2026-09-16 master list:** every SegID and `Status` in
+this table is unchanged, so the cable/extent ratios above still stand. One
+peer count shifted: `ON-OFF DS - ventral` (GCL1-3) went from 2 to 3 peers — a
+new ROI-matched cell of that type appeared — still too small a baseline to
+change the "indicative, not conclusive" call.
+
 ---
 
 ## F. Log bookkeeping
@@ -237,17 +294,51 @@ Two entries in `celltype_explorer_log.xlsx` are duplicates or mis-entries:
 
 Net: 38 rows → 35 unique cells.
 
+**Rechecked against the 2026-09-16 dataset:** unaffected — this is a log-file
+bookkeeping issue, not a data-pipeline one.
+
+---
+
+## G. Two mapping-sheet rows point at a NucID that's in no master sheet — 2 cells
+
+**New finding, not caused by the 2026-09-16 update** — same two rows had the
+same problem under the 2026-07-08e/2026-08-04 sheets, just not written down
+before.
+
+| field | ROI | Latest NucID (from mapping sheet) | in "All Cells"? | in "All Glia"? | in "All BCs"? |
+|---|---|---|---|---|---|
+| GCL2 | 55 | `720575940555724611` | no | no | no |
+| GCL3 | 46 | `720575940555111475` | no | no | no |
+
+Both `2p-Field`/`2p-ROI` rows in the EM-2p mapping sheet carry a `Latest
+NucID`, so `load_df_rois_morph` treats them as real cells — but that NucID
+doesn't appear in *any* of the three proofread-cell master sheets (All Cells,
+All Glia, All BCs), so the inner join to the master list silently drops them.
+They aren't counted among the 376 ROI-matched cells, and they aren't in this
+report's earlier sections either — this is a third bucket of ROIs (alongside
+"§A/§B: matched but no skeleton" and "§C/§D: matched cells with a mapping/mosaic
+issue") that just weren't visible until you look at what the mapping sheet
+excludes.
+
+**Why this is hard for me:** I can't tell from the spreadsheets alone whether
+these are cells that were deleted from proofreading (merged into another
+NucID, marked as debris, excluded some other way) or a stale mapping-sheet
+row that should have been dropped when the cell was. Either fix (drop the
+mapping row, or find where the cell actually landed and correct its NucID)
+needs someone with access to the proofreading history for these two NucIDs.
+
 ---
 
 ## Remaining TODO
 
-| # | item | scope |
-|---|---|---|
-| 1 | Commission skeletonization for the 21 cells in **§A** (14 AC / 6 RGC / 1 untyped) | external |
-| 2 | Copy GCL2-8's SWC from `eyewire2-figures/data/swc/720575940558177239.swc`; diff the two SWC stores (79 files present there but not here) | local |
-| 3 | Spot-check the 8 older-state fallback skeletons in **§B** | review |
-| 4 | Fix GCL0-10 / GCL0-12 in the **EM-2p mapping sheet** — merge or drop (**§C**) | data fix |
-| 5 | Human type review on the 6 cells in the 3 mosaic-violating pairs (**§D**) | review |
-| 6 | Investigate GCL1-5 and GCL3-51 first among the morphology outliers (**§E**) | review |
-| 7 | Correct `Status` for GCL1-14 and GCL4-10 (marked `Complete`, clearly truncated) | data fix |
-| 8 | Clean up the duplicate log rows (**§F**) | housekeeping |
+| # | item | scope | status |
+|---|---|---|---|
+| 1 | Commission skeletonization for the 21 cells in **§A** (14 AC / 6 RGC / 1 untyped) | external | **done** — resolved by the 2026-09-16 skeletonization pass |
+| 2 | Copy GCL2-8's SWC from `eyewire2-figures/data/swc/720575940558177239.swc`; diff the two SWC stores | local | **done** — moot, single shared store now |
+| 3 | Spot-check the 8 older-state fallback skeletons in **§B** | review | **done** — moot, none need the fallback anymore |
+| 4 | Fix GCL0-10 / GCL0-12 in the **EM-2p mapping sheet** — merge or drop (**§C**) | data fix | open — unchanged in the new sheet |
+| 5 | Human type review on the 6 cells in the 3 mosaic-violating pairs (**§D**) | review | open — unchanged in the new sheet |
+| 6 | Investigate GCL1-5 and GCL3-51 first among the morphology outliers (**§E**) | review | open — unchanged in the new sheet |
+| 7 | Correct `Status` for GCL1-14 and GCL4-10 (marked `Complete`, clearly truncated) | data fix | open — still `Complete` in the new sheet |
+| 8 | Clean up the duplicate log rows (**§F**) | housekeeping | open |
+| 9 | Resolve the 2 orphan mapping rows (GCL2-55, GCL3-46) with no matching master-sheet NucID (**§G**) | data fix / proofreading history | **new** |

@@ -1101,11 +1101,22 @@ timeline_layout = pn.Column(
 # %% [markdown]
 # ## Tab 3: Cell type explorer
 #
-# Pick a cell class (RGC / dAC / Other -- see `Cell Class`), a morphological cell type
-# within that class (`Cell Type`, the ground-truth EM/proofreading label -- see
-# `data_loader.load_df_rois_morph`), and either one recording field (`GCL0`..`GCL4`) or
-# all of them, and see every matching cell's:
-# - EM skeleton (left, click a cell to select it -- see below), overlaid at its true
+# Pick a type-selection mode (`Type selection` dropdown -- morphological, the default, or
+# functional), a class within it, a type within that class, and either one recording field
+# (`GCL0`..`GCL4`) or all of them, and see every matching cell's:
+#
+# - **Morphological type**: cell class (RGC / dAC / Other -- see `Cell Class`), then a
+#   morphological cell type within that class (`Cell Type`, the ground-truth EM/proofreading
+#   label -- see `data_loader.load_df_rois_morph`).
+# - **Functional type**: a Baden et al. 2016 supergroup (`Supergroup` -- OFF, ON-OFF, Fast ON,
+#   Slow ON, Unc. ON, Unc. SbC, dAC), then a functional group within it (`Functional group` --
+#   see `baden16_utils.BADEN_GROUP_ID_NAMES`). This is each ROI's own *predicted* type
+#   (`group_id`/`supergroup`, the raw argmax of `probs_per_cluster`), not a proofread ground
+#   truth -- distinct from, and independent of, the "Predicted functional type" probability
+#   bars shown per cell in the cell list below (`cluster_prob_bar_html`), which stay on
+#   display regardless of the selection mode.
+#
+# EM skeleton (left, click a cell to select it -- see below), overlaid at its true
 #   position in the shared retinal frame (same placement logic as `scripts/tutorial/
 #   plot_retinal_outline/plot_retinal_outline.py` and tab 1 above).
 # - Chirp, moving-bar, natural-movie (mouse-cam), and moving-bar direction-tuning
@@ -1187,9 +1198,92 @@ def cell_class_mask(df_, cell_class):
         return ~df_['Cell Class'].isin(['RGC', 'AC'])
 
 
+def celltype_count(cell_class, cell_type):
+    """Number of `df` rows of `cell_type` within `cell_class` (see `cell_class_mask`) --
+    i.e. how many cells this (class, type) combination would match in the complete dataset,
+    ignoring the `Field`/`Quality filter` widgets. Used to annotate `celltype_dropdown`'s
+    options (`format_celltype_label`)."""
+    return int((cell_class_mask(df, cell_class) & (df['Cell Type'] == cell_type)).sum())
+
+
+def format_celltype_label(cell_class, cell_type):
+    """``'F-mini-ON [n=12]'`` -- `cell_type`'s name followed by its total count in the
+    complete dataset (`celltype_count`), matching `format_group_label`'s `[n=...]`
+    convention below."""
+    return f"{cell_type} [n={celltype_count(cell_class, cell_type)}]"
+
+
 CELL_TYPES_BY_CLASS = {
-    cell_class: sorted(df.loc[cell_class_mask(df, cell_class), 'Cell Type'].dropna().unique())
+    cell_class: {
+        format_celltype_label(cell_class, cell_type): cell_type
+        for cell_type in sorted(df.loc[cell_class_mask(df, cell_class), 'Cell Type'].dropna().unique())
+    }
     for cell_class in CELL_CLASS_OPTIONS
+}
+
+NO_TYPES_PLACEHOLDER = '(no cell types for this class)'
+
+# %% [markdown]
+# ### Type-selection mode (morphological / functional)
+#
+# `type_mode_dropdown` (see widgets below) switches the whole type-selection UI between the
+# ground-truth morphological path above (`Cell Class`/`Cell Type`) and a parallel functional
+# path: a `Supergroup` dropdown (the 7 Baden et al. 2016 supergroups) narrows a `Functional
+# group` dropdown (the Baden group names, `baden16_utils.BADEN_GROUP_ID_NAMES`). Both paths
+# feed the same `selected_cells`/`sub` and downstream panels -- only how `sub` is filtered
+# differs.
+#
+# Functional type here means each ROI's *predicted* type (`group_id`/`supergroup`, the argmax
+# of `probs_per_cluster` -- already present on every row of `df`, computed upstream of this
+# repo), not a proofread ground truth. Filtering always uses these raw stored columns, never
+# `baden16_utils.correct_probs_by_cellclass`-corrected ones -- that correction stays purely a
+# *display* concern for the cell list's probability bars (`ct_cellclass_correction_dropdown`),
+# independent of which cells this filter selects.
+#
+# Unlike `Cell Type` (where `cell_class_mask` is needed because a handful of type labels span
+# more than one `Cell Class`), `group_id` -> `supergroup` is a strict many-to-one mapping
+# (`baden16_utils.baden_group_id_to_supergroup`), so filtering by `group_id` alone is always
+# consistent with whichever supergroup narrowed it -- no separate mask helper needed.
+
+# %%
+TYPE_MODE_OPTIONS = {'Morphological type': 'morph', 'Functional type': 'func'}
+
+# Ordered by each supergroup's lowest group ID (not hardcoded/table-row order, so this can't
+# silently drift if `BADEN_CLUSTER_INFO`'s own row order ever changes) -- e.g. 'OFF' (group
+# IDs 1-9) before 'ON-OFF' (10-14), and so on.
+_supergroup_min_group_id = {}
+for _gid, _sg in zip(baden16_utils.BADEN_CLUSTER_INFO[:, 2].astype(int), baden16_utils.BADEN_CLUSTER_INFO[:, 3]):
+    _supergroup_min_group_id[_sg] = min(_gid, _supergroup_min_group_id.get(_sg, _gid))
+SUPERGROUP_OPTIONS = sorted(_supergroup_min_group_id, key=_supergroup_min_group_id.get)
+
+
+def group_count(group_id):
+    """Number of `df` rows predicted as `group_id` (raw, uncorrected argmax) -- i.e. how many
+    cells this functional group would match in the complete dataset, ignoring the `Field`/
+    `Quality filter` widgets. Used to annotate `funcgroup_dropdown`'s options
+    (`format_group_label`), the same way `celltype_count` annotates `celltype_dropdown`'s."""
+    return int((df['group_id'] == group_id).sum())
+
+
+def format_group_label(group_id):
+    """``'G24 [n=8] On alpha sustained'`` -- a Baden group's name prefixed with its numeric ID
+    (``G``, zero-padded to 2 digits, since IDs run 1-46 -- so same-named groups in different
+    supergroups, e.g. group 11 and group 43 are both named 'On-Off local', stay
+    distinguishable, and the ID -- e.g. as reported in other tools/papers -- is visible
+    without cross-referencing `baden16_utils.BADEN_GROUP_ID_NAMES`) and its total count in the
+    complete dataset (`group_count`)."""
+    return (f"G{int(group_id):02d} [n={group_count(group_id)}] "
+            f"{baden16_utils.baden_group_id_to_group_name(int(group_id))}")
+
+
+# Sorted numerically by group ID (matching the `G<id> [n=...] name` label's own leading
+# number).
+GROUPS_BY_SUPERGROUP = {
+    supergroup: {
+        format_group_label(gid): gid
+        for gid in sorted(df.loc[df['supergroup'] == supergroup, 'group_id'].dropna().unique())
+    }
+    for supergroup in SUPERGROUP_OPTIONS
 }
 
 # %% [markdown]
@@ -1249,13 +1343,23 @@ if not os.path.exists(LOG_TABLE_PATH):
 # ## Rendering
 
 # %%
-def selected_cells(field, cell_type, qfilt_only, cell_class):
-    """Rows of `df` matching `cell_type` and `cell_class` (see `cell_class_mask` -- needed
-    even though `cell_type` alone usually determines it, since a few `Cell Type` labels
-    span more than one class) and `field` (unless 'All fields'), sorted by field then
-    roi_id so overlay order is stable/reproducible across renders."""
-    sub = df[df['Cell Type'] == cell_type]
-    sub = sub[cell_class_mask(sub, cell_class)]
+def selected_cells(field, qfilt_only, mode, cell_class, cell_type, group_id):
+    """Rows of `df` matching the current type-selection `mode` and `field` (unless 'All
+    fields'), sorted by field then roi_id so overlay order is stable/reproducible across
+    renders.
+
+    `mode == 'func'`: rows whose predicted `group_id` (raw, uncorrected argmax) equals
+    `group_id` -- `cell_class`/`cell_type` are ignored.
+
+    `mode == 'morph'` (default path): rows matching `cell_type` and `cell_class` (see
+    `cell_class_mask` -- needed even though `cell_type` alone usually determines it, since a
+    few `Cell Type` labels span more than one class) -- `group_id` is ignored.
+    """
+    if mode == 'func':
+        sub = df[df['group_id'] == group_id]
+    else:
+        sub = df[df['Cell Type'] == cell_type]
+        sub = sub[cell_class_mask(sub, cell_class)]
     if field != ALL_FIELDS:
         sub = sub[sub['field'] == field]
     if qfilt_only:
@@ -2069,11 +2173,25 @@ def render_cell_list_html(sub, selected_key, correct_by_cellclass=False):
 # `ct_field_dropdown`.. `qfilt_dropdown`, see `selected_cells`) then row 2 (how to display/
 # highlight that already-selected group -- `morph_view_dropdown`/`cell_dropdown`/
 # `add_to_table_button`).
+# Leftmost widget of row 1 -- switches the rest of row 1 between the morphological
+# (`cellclass_dropdown`/`celltype_dropdown`) and functional (`supergroup_dropdown`/
+# `funcgroup_dropdown`) type-selection widgets (see `on_type_mode_change`); only one pair is
+# visible at a time.
+type_mode_dropdown = pn.widgets.Select(name='Type selection', options=TYPE_MODE_OPTIONS, value='morph', width=160)
+
 ct_field_dropdown = pn.widgets.Select(name='Field', options=FIELD_OPTIONS, value=ALL_FIELDS, width=140)
 cellclass_dropdown = pn.widgets.Select(name='Cell class', options=CELL_CLASS_OPTIONS, value='RGC', width=140)
 celltype_dropdown = pn.widgets.Select(name='Morphological cell type',
-                                       options=CELL_TYPES_BY_CLASS['RGC'], value=CELL_TYPES_BY_CLASS['RGC'][0],
+                                       options=CELL_TYPES_BY_CLASS['RGC'],
+                                       value=next(iter(CELL_TYPES_BY_CLASS['RGC'].values())),
                                        width=260)
+# Functional-type counterparts of `cellclass_dropdown`/`celltype_dropdown` (see
+# `GROUPS_BY_SUPERGROUP`) -- hidden until `type_mode_dropdown` is switched to 'func'.
+supergroup_dropdown = pn.widgets.Select(name='Supergroup', options=SUPERGROUP_OPTIONS,
+                                         value=SUPERGROUP_OPTIONS[0], width=140, visible=False)
+_initial_group_options = GROUPS_BY_SUPERGROUP[SUPERGROUP_OPTIONS[0]] or {NO_TYPES_PLACEHOLDER: None}
+funcgroup_dropdown = pn.widgets.Select(name='Functional group', options=_initial_group_options,
+                                        value=next(iter(_initial_group_options.values())), width=260, visible=False)
 # A `Select`, not a `Checkbox`, to stay visually consistent with the other cell-selection
 # dropdowns on this row.
 QFILT_OPTIONS = {'Only quality-filtered (qfilt)': True, 'All cells': False}
@@ -2139,8 +2257,8 @@ def loading_morph_figure():
     return message_figure(MORPH_PLOTLY_SIZE, 'Loading...')
 
 
-_initial_sub = selected_cells(ct_field_dropdown.value, celltype_dropdown.value, qfilt_dropdown.value,
-                               cellclass_dropdown.value)
+_initial_sub = selected_cells(ct_field_dropdown.value, qfilt_dropdown.value, type_mode_dropdown.value,
+                               cellclass_dropdown.value, celltype_dropdown.value, funcgroup_dropdown.value)
 if len(_initial_sub):
     _initial_morph_fig, CURVE_TO_KEY = make_morph_figure(_initial_sub, ct_field_dropdown.value, selected_key,
                                                          view_mode=morph_view_dropdown.value)
@@ -2154,9 +2272,23 @@ morph_pane = pn.pane.Plotly(_initial_morph_fig, margin=0)
 ipl_pane = pn.pane.Plotly(_initial_ipl_fig, margin=0)
 traces_pane = pn.pane.Matplotlib(render_traces_fig(_initial_sub, selected_key), tight=True, format='png', dpi=110,
                                   margin=0)
+def current_type_label():
+    """Title text naming the current type selection -- `Supergroup -- Functional group` under
+    `type_mode_dropdown == 'func'`, else `Cell class -- Morphological cell type` (the previous,
+    only, behaviour). Used by both `title_pane`'s initial value and `set_title_pane`, so the
+    two can't drift apart."""
+    if type_mode_dropdown.value == 'func':
+        group_label = (format_group_label(funcgroup_dropdown.value)
+                      if funcgroup_dropdown.value is not None else NO_TYPES_PLACEHOLDER)
+        return f"{supergroup_dropdown.value} -- {group_label}"
+    cell_type = celltype_dropdown.value
+    type_label = (format_celltype_label(cellclass_dropdown.value, cell_type)
+                 if cell_type is not None else NO_TYPES_PLACEHOLDER)
+    return f"{cellclass_dropdown.value} -- {type_label}"
+
+
 title_pane = pn.pane.Markdown(
-    f"### {cellclass_dropdown.value} -- {celltype_dropdown.value} -- "
-    f"{ct_field_dropdown.value} -- n={len(_initial_sub)}",
+    f"### {current_type_label()} -- {ct_field_dropdown.value} -- n={len(_initial_sub)}",
     margin=(0, 0, 10, 0),
 )
 # Shows the selected cell's field/ROI once one is picked in `morph_pane`/`ipl_pane` (see
@@ -2205,8 +2337,7 @@ def set_traces_pane(sub, selected_key):
 
 
 def set_title_pane(field, sub):
-    title_pane.object = (f"### {cellclass_dropdown.value} -- {celltype_dropdown.value} -- "
-                         f"{field} -- n={len(sub)}")
+    title_pane.object = f"### {current_type_label()} -- {field} -- n={len(sub)}"
 
 
 def set_selection_pane(sub, selected_key):
@@ -2257,8 +2388,9 @@ async def blank_heavy_panes():
 
 
 async def redraw_filters():
-    """Triggered when a cell-*selection* filter (field/cell class/cell type/qfilt) changes --
-    the only thing that changes `sub` (which cells match), so it's the only redraw that
+    """Triggered when a cell-*selection* filter (field/qfilt, type-selection mode, or either
+    mode's own class/type dropdowns) changes -- the only thing that changes `sub` (which cells
+    match), so it's the only redraw that
     touches every panel. `title_pane`/`selection_pane`/`cell_dropdown` are cheap (no file I/O
     or per-cell skeleton alignment) and set directly from the freshly computed `sub`, with no
     "Loading..." placeholder. `cell_list_pane` is *not* cheap to skip a placeholder for even
@@ -2274,7 +2406,8 @@ async def redraw_filters():
     await blank_heavy_panes()
 
     field = ct_field_dropdown.value
-    sub = selected_cells(field, celltype_dropdown.value, qfilt_dropdown.value, cellclass_dropdown.value)
+    sub = selected_cells(field, qfilt_dropdown.value, type_mode_dropdown.value,
+                         cellclass_dropdown.value, celltype_dropdown.value, funcgroup_dropdown.value)
     current_sub = sub
 
     set_morph_pane(sub, field, selected_key)
@@ -2327,9 +2460,6 @@ async def on_filter_change(event=None):
     await redraw_filters()
 
 
-NO_TYPES_PLACEHOLDER = '(no cell types for this class)'
-
-
 def on_cellclass_change(event):
     """Switching cell class swaps the type list to that class's own types (see
     `CELL_TYPES_BY_CLASS`) and jumps to its first entry -- set together via one atomic
@@ -2340,8 +2470,32 @@ def on_cellclass_change(event):
     naturally matches zero rows against it. Doesn't call `redraw_filters` itself: setting
     `celltype_dropdown`'s value fires its own 'value' watcher (`on_filter_change`), which
     does."""
-    options = CELL_TYPES_BY_CLASS[event.new] or [NO_TYPES_PLACEHOLDER]
-    celltype_dropdown.param.update(options=options, value=options[0])
+    options = CELL_TYPES_BY_CLASS[event.new] or {NO_TYPES_PLACEHOLDER: None}
+    celltype_dropdown.param.update(options=options, value=next(iter(options.values())))
+
+
+def on_supergroup_change(event):
+    """Functional-type counterpart of `on_cellclass_change` -- swaps `funcgroup_dropdown`'s
+    options to the new supergroup's own functional groups (`GROUPS_BY_SUPERGROUP`) and jumps
+    to the first, via one atomic Param update, same reasoning (and same `NO_TYPES_PLACEHOLDER`
+    fallback, for a supergroup with no cells in the loaded data) as `on_cellclass_change`.
+    Doesn't call `redraw_filters` itself: setting `funcgroup_dropdown`'s value fires its own
+    'value' watcher (`on_filter_change`), which does."""
+    options = GROUPS_BY_SUPERGROUP[event.new] or {NO_TYPES_PLACEHOLDER: None}
+    funcgroup_dropdown.param.update(options=options, value=next(iter(options.values())))
+
+
+async def on_type_mode_change(event):
+    """Switching `type_mode_dropdown` swaps which pair of class/type dropdowns is visible --
+    `cellclass_dropdown`/`celltype_dropdown` for 'morph', `supergroup_dropdown`/
+    `funcgroup_dropdown` for 'func' -- then redraws via `on_filter_change`, since the mode
+    itself changes which cells match (`selected_cells`)."""
+    is_func = event.new == 'func'
+    cellclass_dropdown.visible = not is_func
+    celltype_dropdown.visible = not is_func
+    supergroup_dropdown.visible = is_func
+    funcgroup_dropdown.visible = is_func
+    await on_filter_change()
 
 
 async def on_morph_click(event):
@@ -2396,9 +2550,12 @@ def on_ct_cellclass_correction_change(event):
     redraw_cell_list()
 
 
+type_mode_dropdown.param.watch(on_type_mode_change, 'value')
 ct_field_dropdown.param.watch(on_filter_change, 'value')
 cellclass_dropdown.param.watch(on_cellclass_change, 'value')
 celltype_dropdown.param.watch(on_filter_change, 'value')
+supergroup_dropdown.param.watch(on_supergroup_change, 'value')
+funcgroup_dropdown.param.watch(on_filter_change, 'value')
 qfilt_dropdown.param.watch(on_filter_change, 'value')
 # A display choice, not a filter -- redraws (to pick up the new view_mode) without
 # resetting selected_key, unlike the filter widgets above.
@@ -2472,9 +2629,13 @@ log_save_button.on_click(on_log_save_click)
 
 celltype_layout = pn.Column(
     title_pane,
-    # Row 1: cell selection (which cells match). Row 2: display/highlight options for the
+    # Row 1: cell selection (which cells match) -- `type_mode_dropdown` leftmost, switching
+    # between the morphological (`cellclass_dropdown`/`celltype_dropdown`) and functional
+    # (`supergroup_dropdown`/`funcgroup_dropdown`) pair next to it (only one pair visible at a
+    # time -- see `on_type_mode_change`). Row 2: display/highlight options for the
     # already-selected group, below it.
-    pn.Row(ct_field_dropdown, cellclass_dropdown, celltype_dropdown, qfilt_dropdown),
+    pn.Row(type_mode_dropdown, ct_field_dropdown, cellclass_dropdown, celltype_dropdown,
+          supergroup_dropdown, funcgroup_dropdown, qfilt_dropdown),
     pn.Row(morph_view_dropdown, cell_dropdown, add_to_table_button),
     # `margin=0` on the panes themselves plus here on their Row -- morphology and the
     # response panels sit right next to each other, no gap. `selection_pane`/`ipl_pane` sit

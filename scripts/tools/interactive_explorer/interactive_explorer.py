@@ -200,6 +200,24 @@ def empty_line_trace():
     return go.Scatter(x=[], y=[], mode='lines', hoverinfo='skip', showlegend=False)
 
 
+def loading_mpl_figure(figsize, text='Loading...'):
+    """Blank Matplotlib figure of `figsize` with `text` centered on it and no axes -- shown in a
+    pane while an async redraw's real (blocking) recompute is still running, see `select_index`
+    and `redraw_tl_selection` below."""
+    fig = plt.figure(figsize=figsize)
+    fig.text(0.5, 0.5, text, ha='center', va='center')
+    return fig
+
+
+def loading_plotly_figure(width, height, text='Loading...'):
+    """Blank Plotly figure of `width`x`height` with `text` centered on it and no axes -- Plotly
+    counterpart of `loading_mpl_figure`, for the scatter panes."""
+    fig = go.Figure()
+    fig.update_layout(width=width, height=height, xaxis=dict(visible=False), yaxis=dict(visible=False),
+                       annotations=[dict(text=text, showarrow=False, xref='paper', yref='paper', x=0.5, y=0.5)])
+    return fig
+
+
 # %% [markdown]
 # ## Tab 1: Cell explorer -- cell picker (scatter + field/ROI/stimulus dropdowns) and detail panel
 
@@ -210,6 +228,11 @@ def empty_line_trace():
 CELL_CLASS_COLORS = {'RGC': '#d62728', 'AC': '#1f77b4'}
 CELL_CLASS_DEFAULT_COLOR = '#999999'
 SELECTED_COLOR = 'black'
+
+# In-memory cache for `render_morph_panel`'s on-demand IPL profile compute (`Latest SegID` ->
+# `(ipl, dens)` from `plot_morph.compute_ipl_z_profile`, or `None` if the compute itself failed)
+# -- avoids recomputing the same (slow) profile every time a cell is redrawn/reselected.
+_computed_ipl_profile_cache = {}
 
 
 def skel_edge_trace(row):
@@ -289,11 +312,12 @@ N_MC_REPS = 3
 
 
 def render_morph_panel(fig, gs_slot, row, correct_by_cellclass=False):
-    """Render `row`'s XY morphology (with its IPL stratification profile alongside, from a
+    """Render `row`'s XY morphology (with its IPL stratification profile alongside, preferring a
     precomputed CSV -- see `scripts/preprocessing/compute_ipl_profiles.py` and
-    `data_loader.load_ipl_profile` -- rather than computing it live via `pywarper`, which is
-    slow and depends on an optional native solver for good performance) plus its predicted-type
-    probability bars below (`plot_morph.plot_type_prediction_bars`).
+    `data_loader.load_ipl_profile` -- over computing it live via `pywarper` (slow and depends on
+    an optional native solver for good performance); when a cell has no precomputed profile yet,
+    it's computed on demand and cached in-memory, see `_computed_ipl_profile_cache`) plus its
+    predicted-type probability bars below (`plot_morph.plot_type_prediction_bars`).
 
     `correct_by_cellclass` (see `cellclass_correction_dropdown` below) is forwarded to the
     type-prediction bars: the classifier confuses RGCs and dACs fairly often, and this lets the
@@ -315,9 +339,20 @@ def render_morph_panel(fig, gs_slot, row, correct_by_cellclass=False):
         if ipl_profile is not None:
             plot_morph.plot_ipl_profile_from_arrays(ax_ipl, ipl_profile['z'].to_numpy(), ipl_profile['dens'].to_numpy())
         else:
-            # Not yet computed (or failed) -- see scripts/preprocessing/compute_ipl_profiles.py.
-            ax_ipl.text(0.5, 0.5, 'IPL profile\nnot cached', ha='center', va='center', fontsize=7, wrap=True)
-            ax_ipl.axis('off')
+            # Not precomputed -- fall back to a live (slower) compute, cached in-memory so
+            # re-rendering/reselecting the same cell doesn't recompute it again.
+            seg_id = row['Latest SegID']
+            if seg_id not in _computed_ipl_profile_cache:
+                try:
+                    _computed_ipl_profile_cache[seg_id] = plot_morph.compute_ipl_z_profile(row['skel'])
+                except Exception:
+                    _computed_ipl_profile_cache[seg_id] = None
+            computed = _computed_ipl_profile_cache[seg_id]
+            if computed is not None:
+                plot_morph.plot_ipl_profile_from_arrays(ax_ipl, *computed)
+            else:
+                ax_ipl.text(0.5, 0.5, 'IPL profile\nunavailable', ha='center', va='center', fontsize=7, wrap=True)
+                ax_ipl.axis('off')
     else:
         ax_morph.text(0.5, 0.5, f"no skeleton found for {row['Latest SegID']}",
                       ha='center', va='center', wrap=True)
@@ -376,6 +411,7 @@ def render_cell(idx, correct_by_cellclass=False):
         ax_chirp = fig.add_subplot(gs[0, 2])
         plot_traces.plot_chirp(ax_chirp, row)
         ax_chirp.set_title('Chirp')
+        ax_chirp.set_xlabel(None)  # redundant with ax_mc's "Times (s)" directly below it
 
         ax_mc = fig.add_subplot(gs[1, 2])
         plot_traces.plot_mc_test_snippets(ax_mc, row)
@@ -441,7 +477,7 @@ detail_pane = pn.pane.Matplotlib(render_cell(roi_dropdown.value, correct_by_cell
                                   tight=True, format='png', dpi=100)
 
 
-def select_index(idx):
+async def select_index(idx):
     """Update the scatter highlight/overlay and the detail panel for global row `idx`.
 
     This is the *only* place that actually redraws the detail panel. Both the
@@ -451,7 +487,17 @@ def select_index(idx):
     panel, regardless of how the selection was made. The scatter itself is
     redrawn here too (its stimulus footprint follows the newly selected
     ROI's field), reusing the currently selected stimulus type.
+
+    Blanks both panels to a "Loading..." placeholder first and yields to the event loop (`await
+    asyncio.sleep(...)`) just long enough for Panel to push that to the browser before the real
+    (blocking) redraw, same pattern as "Cell type explorer"'s `blank_heavy_panes`.
     """
+    scatter_pane.object = loading_plotly_figure(480, 480)
+    old_fig = detail_pane.object
+    detail_pane.object = loading_mpl_figure((14, 5.5))
+    plt.close(old_fig)
+    await asyncio.sleep(0.01)
+
     scatter_pane.object = make_scatter_figure(selected_idx=idx, stim_type=stim_dropdown.value)
 
     old_fig = detail_pane.object
@@ -459,8 +505,8 @@ def select_index(idx):
     plt.close(old_fig)
 
 
-def on_roi_change(event):
-    select_index(event.new)
+async def on_roi_change(event):
+    await select_index(event.new)
 
 
 def on_stim_change(event):
@@ -512,9 +558,9 @@ def on_scatter_click(event):
         roi_dropdown.value = idx  # triggers on_roi_change above
 
 
-def on_cellclass_correction_change(event):
+async def on_cellclass_correction_change(event):
     """Re-render whichever cell is currently shown in each tab-1 view under the new correction setting."""
-    select_index(roi_dropdown.value)
+    await select_index(roi_dropdown.value)
     if tl_roi_dropdown.value is not None:
         redraw_tl_morph(tl_roi_dropdown.value)
 
@@ -640,8 +686,13 @@ def load_stim_movie_npz(stim_type):
         movie = np.load(os.path.join(data_loader.DATA_2P, 'stimuli', subdir, fname))
         trigger = movie['trigger']
         trigger0 = np.argmax(trigger) # Start stimulus at first trigger
+        # `time` must be trimmed the same way as `intensity` (not just sliced from `intensity`'s
+        # own start) -- otherwise `movie_duration`/`idx` in `stim_intensity_trace` are computed
+        # against the untrimmed (longer) movie length, letting `idx` run past the end of the
+        # now-shorter `intensity` array.
+        time = movie['time'][trigger0:]
         intensity = movie['stimulus'].mean(axis=(1, 2))[trigger0:, None]
-        _stim_npz_cache[stim_type] = (movie['time'], intensity)
+        _stim_npz_cache[stim_type] = (time, intensity)
     return _stim_npz_cache[stim_type]
 
 
@@ -865,7 +916,7 @@ def format_hms(seconds):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-SESSION_MAP_FIGSIZE = (9, 1.3)
+SESSION_MAP_FIGSIZE = (9, 1.7)  # extra height so the legend below the axes has room, no overlap
 SESSION_MAP_DPI = 100
 SESSION_MAP_WIDTH_PX = SESSION_MAP_FIGSIZE[0] * SESSION_MAP_DPI  # matches the slider's own width, below
 
@@ -900,7 +951,7 @@ def render_session_map(t):
 
     legend_handles = [Patch(facecolor=STIM_TYPE_COLORS[s], label=STIM_LABELS[s]) for s in STIM_TYPE_COLORS]
     legend_handles.append(Patch(facecolor='none', edgecolor='0.5', hatch='///', label='gap / setup'))
-    ax.legend(handles=legend_handles, loc='upper center', bbox_to_anchor=(0.5, -0.6),
+    ax.legend(handles=legend_handles, loc='upper center', bbox_to_anchor=(0.5, -0.45),
               ncol=4, frameon=False, fontsize=7, handlelength=1.2)
 
     fig.tight_layout()
@@ -958,10 +1009,28 @@ def redraw_session_map():
     plt.close(old_fig)
 
 
-def on_tl_roi_change(event):
-    redraw_tl_scatter(event.new)
-    redraw_tl_morph(event.new)
+async def redraw_tl_selection(idx):
+    """Blank `tl_scatter_pane`/`tl_morph_pane`/`heatmap_pane` to a "Loading..." placeholder, then
+    redraw them for the newly selected ROI `idx` -- same loading-state pattern as `select_index`
+    in "Cell explorer" (and "Cell type explorer"'s `blank_heavy_panes`). Only used for actual
+    cell-selection changes (ROI dropdown / scatter click), not for time-slider scrubbing, which
+    fires far more often and stays synchronous."""
+    tl_scatter_pane.object = loading_plotly_figure(480, 480)
+    old_morph_fig = tl_morph_pane.object
+    tl_morph_pane.object = loading_mpl_figure((4.5, 5))
+    plt.close(old_morph_fig)
+    old_heatmap_fig = heatmap_pane.object
+    heatmap_pane.object = loading_mpl_figure((6.5, 7.5))
+    plt.close(old_heatmap_fig)
+    await asyncio.sleep(0.01)
+
+    redraw_tl_scatter(idx)
+    redraw_tl_morph(idx)
     redraw_tl_heatmap()
+
+
+async def on_tl_roi_change(event):
+    await redraw_tl_selection(event.new)
 
 
 def on_tl_scatter_click(event):

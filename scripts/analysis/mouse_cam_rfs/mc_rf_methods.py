@@ -22,9 +22,9 @@
 # - `wsta`: whitened STA, ``C_t^-1 STA C_s^-1`` with a separable (temporal x spatio-chromatic) approximation
 #   of the stimulus covariance and ridge-regularized inverses.
 # - `ridge` / `lasso` / `enet`: linear-Gaussian GLM with L2 / L1 / L1+L2 penalty on a separable B-spline basis (t x y x x x channel).
-# - `ald` / `asd`: rfest evidence optimization (automatic locality / smoothness determination) of the chromatic sRF
-#   (2 x 14 x 14 at 50 µm), using the per-channel tRFs of the ridge fit to project the stimulus in time
-#   (two-stage, separable per channel). The green-UV prior covariance is a free 2x2 matrix.
+# - `ald` / `asd`: rfest's `ALD` / `ASD` evidence optimization (automatic locality / smoothness determination) of the
+#   sRF of each channel (14 x 14 at 50 µm, fitted independently for green and UV), using the per-channel tRFs of the
+#   ridge fit to project the stimulus in time (two-stage, separable per channel). Runs on GPU if JAX finds one.
 #
 # Hyperparameters are chosen per ROI by 2-fold cross-validation (train1 <-> train2, correlation of the prediction).
 # Quality measures as before: `split_cc` (STRFs from train1 vs. train2, past lags) and `test_cc`
@@ -43,10 +43,18 @@
 # - ALD/ASD in that run gave salt-and-pepper sRFs (split_cc ~0): the evidence treats the 16k frames as independent.
 #   Fixed afterwards with `EB_SAMPLE_FACTOR`, tested on GCL0 rois 5/68/10/21 (test_cc):
 #   ALD k=1: 0.49/0.10/0.16/0.28 | k=6: 0.47/0.36/0.32/0.31 | k=20: 0.52/0.36/0.32/0.33 | ridge: 0.48/0.32/0.35/0.28.
-# - rfest's evidence was replaced by a Cholesky-only version (identical values; JAX's CPU LU/inv/pinv are very slow).
+# - An earlier version used a Cholesky-only reimplementation of the evidence with a free 2x2 green-UV prior covariance
+#   (JAX's CPU LU/inv/pinv are very slow); replaced by the original rfest classes, to be run on GPU.
 #
-# The current script (ALD/ASD with k=20, new `enet` method, wsta grid up to 1e3) has NOT been run end-to-end yet;
-# the figures/pickle on disk are from the first run. Runtime on an 8-core laptop: ~30-45 min per field.
+# The current script (rfest ALD/ASD per channel with k=20, new `enet` method, wsta grid up to 1e3) has NOT been run
+# end-to-end yet; the figures/pickle on disk are from the first run. Runtime on an 8-core laptop: ~30-45 min per field.
+#
+# ## Resuming
+#
+# Every finished (field, method) and every finished ALD/ASD ROI is written to `results/methods_cache/<tag>/`
+# (atomically) and loaded again on the next start, so interrupting (Ctrl-C, job time limit) loses at most the ROI
+# or method in progress. The tag encodes `BIN_XY`, `EB_BIN` and `EB_SAMPLE_FACTOR`; delete the folder after changing
+# any other setting (grids, bases, examples), or the stale results are reused.
 # lasso and enet take ~15 min each, nearly independent of the number of ROIs (5880 x 5880 Gram matrix, FISTA);
 # ALD/ASD take ~1-2 min per ROI and prior (3 folds). Memory: features ~430 MB + 3 Gram matrices ~280 MB each per field.
 #
@@ -58,7 +66,7 @@
 #    response x stimulus (response alone gives ~5-10 frames, k=20 was better than 6).
 # 3. Optional: ALD at full 25 µm resolution (2 x 28 x 28 coefficients, ~64x the cost of 14 x 14) or on a crop around
 #    the ridge RF center; joint spatiotemporal ALD instead of the two-stage fit.
-# 4. Choose a method, then go large scale: move the chosen code (e.g. `ChromaticEB`, `fit_basis_glm`) into
+# 4. Choose a method, then go large scale: move the chosen code (e.g. `fit_eb_channel`, `fit_basis_glm`) into
 #    `receptive_fields.py`, use it in `mouse_cam_rfs.py` instead of the STA for all ROIs, and redefine `rf_ok`
 #    (split_cc thresholds are not comparable across methods; e.g. test_cc vs. the wrong-sequence control).
 # 5. Re-check tRF polarity against the chirp supergroups (several STA polarities flip after decorrelation,
@@ -67,6 +75,15 @@
 
 # %%
 import os
+
+# Limit the CPU cores; must be set before numpy / jax are imported (BLAS, OpenMP and XLA-CPU thread pools).
+N_CPUS = 40
+for var in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+    os.environ[var] = str(N_CPUS)
+if hasattr(os, 'sched_setaffinity'):  # Linux: hard limit, also covers any thread pool missed above (e.g. XLA-CPU)
+    os.sched_setaffinity(0, sorted(os.sched_getaffinity(0))[:N_CPUS])
+
+import pickle
 import time
 
 import matplotlib.pyplot as plt
@@ -115,6 +132,11 @@ EB_BIN = 2  # additional spatial binning for ALD / ASD (rfest scales cubically w
 # The evidence assumes independent samples, but response and movie are autocorrelated (response alone: ~5-10 frames).
 # Without correction, the noise is underestimated and the prior too weak (salt-and-pepper sRFs).
 EB_SAMPLE_FACTOR = 20
+# Adam step sizes of the evidence optimization; rfest's ASD does not constrain rho > 0 and diverges for larger steps
+EB_STEP_SIZE = {'ald': 0.1, 'asd': 0.005}
+
+CACHE_DIR = os.path.join(RESULTS_DIR, 'methods_cache', f'bin{BIN_XY}_ebbin{EB_BIN}_k{EB_SAMPLE_FACTOR}')
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 # %% [markdown]
 # # Data
@@ -157,6 +179,22 @@ def evaluate(stim, responses, strfs):
     pred = np.mean([rf.predict_linear(stim, strfs['train'], shifts, idxs) for idxs in test_idxs], axis=0)
     test_cc = colwise_cc(pred[n_eval_skip:], responses[test_idxs].mean(axis=0)[n_eval_skip:])
     return dict(split_cc=split_cc, test_cc=test_cc)
+
+
+def cached(name, fn):
+    """Result of fn(), loaded from CACHE_DIR/name.pkl if present, else computed and saved (atomically)."""
+    path = os.path.join(CACHE_DIR, f'{name}.pkl')
+    if os.path.exists(path):
+        try:
+            with open(path, 'rb') as f:
+                return pickle.load(f)
+        except (pickle.UnpicklingError, EOFError):
+            pass  # unreadable, recompute
+    result = fn()
+    with open(path + '.tmp', 'wb') as f:
+        pickle.dump(result, f)
+    os.replace(path + '.tmp', path)
+    return result
 
 
 def select_by_cv(val_ccs):
@@ -230,63 +268,17 @@ def fit_basis_glm(feats, grams, bases, responses, kind):
 # %% [markdown]
 # ## ALD / ASD (rfest)
 #
-# rfest builds the dense prior covariance over all RF coefficients, so the RF is reduced to the chromatic sRF
-# by fixing the per-channel tRFs from the ridge fit, and estimated at 50 µm resolution (2 x 14 x 14 = 392 coefficients;
-# 28 x 28 takes ~4 s per optimization step). Sufficient statistics are divided by `EB_SAMPLE_FACTOR`
-# (effective number of independent samples).
+# rfest builds the dense prior covariance over all RF coefficients, so the RF is reduced to the sRF of each channel
+# by fixing the per-channel tRFs from the ridge fit, and estimated at 50 µm resolution (14 x 14 = 196 coefficients per
+# channel). Sufficient statistics are divided by `EB_SAMPLE_FACTOR` (effective number of independent samples).
 
 # %%
 import jax  # noqa: E402
-import jax.scipy.linalg  # noqa: E402
-from rfest.EvidenceOpt import EmpiricalBayes  # noqa: E402
-from rfest.priors import _dense_prior  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
+from rfest import ALD, ASD  # noqa: E402
 
 jax.config.update('jax_debug_nans', False)  # enabled globally by rfest.GLM, slows everything down
-
-
-class ChromaticEB(EmpiricalBayes):
-    """Evidence optimization for sRFs of shape (2, ny, nx): free 2x2 channel covariance x ALD/ASD prior in y and x."""
-
-    def __init__(self, X, y, dims, prior='ald', sample_factor=1.):
-        super().__init__(X, y, dims, compute_mle=False, time='channel', space=prior,
-                         n_hp_time=3, n_hp_space={'ald': 4, 'asd': 1}[prior])
-        self.XtX, self.XtY, self.YtY = self.XtX / sample_factor, self.XtY / sample_factor, self.YtY / sample_factor
-        self.n_samples = self.n_samples / sample_factor
-        self.negative_log_evidence = jax.jit(self.negative_log_evidence)  # rfest evaluates it un-jitted every step
-
-    def cov1d_time(self, params, ncoeff):
-        chol = jnp.array([[params[0], 0.], [params[1], params[2]]])
-        return _dense_prior(chol @ chol.T)
-
-    def prior_chol(self, params):
-        """Cholesky factor of the prior covariance, the Kronecker product of the per-dimension factors."""
-        n_t, n_s = self.n_hp_time, self.n_hp_space
-        c_c = self.cov1d_time(params[2:2 + n_t], self.dims[0])[0]
-        c_y = self.cov1d_space(params[2 + n_t:2 + n_t + n_s], self.dims[1])[0]
-        c_x = self.cov1d_space(params[2 + n_t + n_s:], self.dims[2])[0]
-        chol_c, chol_y, chol_x = (jnp.linalg.cholesky(c) for c in (c_c, c_y, c_x))
-        return jnp.sqrt(jnp.abs(params[1])) * jnp.kron(chol_c, jnp.kron(chol_y, chol_x))
-
-    def _posterior(self, params):
-        """With C_prior = L L': m_post = L M^-1 L' X'y / s^2, M = I + L' X'X L / s^2, log|C_prior C_post^-1| = log|M|."""
-        sigma = params[0]
-        chol_prior = self.prior_chol(params)
-        m = jnp.eye(self.n_features) + chol_prior.T @ self.XtX @ chol_prior / sigma ** 2
-        chol_m = jnp.linalg.cholesky(m)
-        xty = self.XtY / sigma ** 2
-        m_post = chol_prior @ jax.scipy.linalg.cho_solve((chol_m, True), chol_prior.T @ xty)
-        return m_post, 2 * jnp.sum(jnp.log(jnp.diag(chol_m))), xty
-
-    def negative_log_evidence(self, params):
-        """As rfest (Park & Pillow 2011, eq. 10), but using Cholesky factors only (JAX's CPU LU/inv/pinv are slow)."""
-        sigma = params[0]
-        m_post, logdet, xty = self._posterior(params)
-        t0 = jnp.log(2 * jnp.pi * sigma ** 2) * self.n_samples
-        return 0.5 * (t0 + logdet - m_post @ xty + self.YtY / sigma ** 2)
-
-    def posterior_mean(self, params):
-        return self._posterior(params)[0]
+print('JAX devices:', jax.devices())
+EB_MODELS = {'ald': ALD, 'asd': ASD}
 
 
 def project_stim_time(stim, trfs):
@@ -301,15 +293,11 @@ def project_stim_time(stim, trfs):
     return np.moveaxis(out, -1, 1)
 
 
-def fit_eb_srf(stim, response, strf_init, idxs, prior, num_iters=500, verbose=False):
-    """Two-stage fit: tRFs from strf_init, then ALD/ASD of the chromatic sRF. Returns the full STRF."""
-    trfs = np.stack([rf.split_strf(strf_init[..., c])[1] for c in range(stim.shape[-1])], axis=1)  # (n_t, n_ch)
-    z = mc.bin_movie(np.moveaxis(project_stim_time(stim, trfs)[idxs], 1, -1), EB_BIN)  # (n, ny, nx, n_ch)
-    n_ch, ny, nx = z.shape[-1], z.shape[1], z.shape[2]
-    z = np.moveaxis(z, -1, 1).reshape(idxs.size, -1).astype(np.float64)
+def fit_eb_channel(z, y, prior, num_iters=500, verbose=False):
+    """rfest ALD/ASD of one channel's sRF from the time-projected stimulus z (n, ny, nx). Returns (srf, params)."""
+    n, ny, nx = z.shape
+    z = z.reshape(n, -1).astype(np.float64)
     z -= z.mean(axis=0)
-    y = response[idxs].astype(np.float64)
-    y = (y - y.mean()) / y.std()
 
     # Initialization from a ridge solution, with rescaled features such that the RF weights are O(1)
     ztz = z.T @ z
@@ -318,27 +306,46 @@ def fit_eb_srf(stim, response, strf_init, idxs, prior, num_iters=500, verbose=Fa
     z *= scale
     w0 /= scale
 
-    srf0 = np.abs(w0.reshape(n_ch, ny, nx)).sum(axis=0)
-    iy, ix = np.unravel_index(np.argmax(srf0), srf0.shape)
+    iy, ix = np.unravel_index(np.argmax(np.abs(w0.reshape(ny, nx))), (ny, nx))
     if prior == 'ald':
         p_space = [3., iy, 0.3, 0., 3., ix, 0.3, 0.]  # tau, nu, tau_f, nu_f for y, then x
     else:
         p_space = [2., 2.]  # smoothness length scales in pixels
-    p0 = [0.9, 1., 1., 0.5, 0.8] + p_space
+    p0 = [0.9, 1.] + p_space  # sigma, rho, then the prior parameters
 
-    model = ChromaticEB(z, y, [n_ch, ny, nx], prior=prior, sample_factor=EB_SAMPLE_FACTOR)
-    model.fit(p0, num_iters=num_iters, step_size=0.1, tolerance=10, verbose=verbose)
-    srf = np.asarray(model.posterior_mean(model.optimized_params)).reshape(n_ch, ny, nx) * scale  # unscaled features
-    srf = np.kron(srf, np.ones((1, EB_BIN, EB_BIN))) / EB_BIN ** 2  # same prediction on the unbinned stimulus
-    return np.einsum('jc,cyx->jyxc', trfs, srf), np.asarray(model.optimized_params)
+    model = EB_MODELS[prior](z, y, [ny, nx], compute_mle=False)
+    # The evidence assumes independent samples, see EB_SAMPLE_FACTOR
+    model.XtX, model.XtY, model.YtY = (v / EB_SAMPLE_FACTOR for v in (model.XtX, model.XtY, model.YtY))
+    model.n_samples = model.n_samples / EB_SAMPLE_FACTOR
+    model.negative_log_evidence = jax.jit(model.negative_log_evidence)  # rfest evaluates it un-jitted every step
+    model.fit(p0, num_iters=num_iters, step_size=EB_STEP_SIZE[prior], tolerance=10, verbose=verbose)
+    return np.asarray(model.w_opt).reshape(ny, nx) * scale, np.asarray(model.optimized_params)  # unscaled features
 
 
-def fit_eb(stim, responses, strfs_ridge, prior):
+def fit_eb_srf(stim, response, strf_init, idxs, prior):
+    """Two-stage fit: tRFs from strf_init, then ALD/ASD of the sRF per channel. Returns the full STRF and parameters."""
+    trfs = np.stack([rf.split_strf(strf_init[..., c])[1] for c in range(stim.shape[-1])], axis=1)  # (n_t, n_ch)
+    z = mc.bin_movie(np.moveaxis(project_stim_time(stim, trfs)[idxs], 1, -1), EB_BIN)  # (n, ny, nx, n_ch)
+    y = response[idxs].astype(np.float64)
+    y = (y - y.mean()) / y.std()
+    srfs, params = zip(*[fit_eb_channel(z[..., c], y, prior) for c in range(z.shape[-1])])
+    srf = np.kron(np.stack(srfs), np.ones((1, EB_BIN, EB_BIN))) / EB_BIN ** 2  # same prediction on the unbinned stimulus
+    return np.einsum('jc,cyx->jyxc', trfs, srf), np.stack(params)
+
+
+def fit_eb(stim, responses, strfs_ridge, prior, roi_ids, name):
+    """ALD/ASD for all ROIs; each ROI is cached on disk when finished, so an interrupted run resumes at the next ROI."""
     strfs = {fold: np.zeros_like(strfs_ridge[fold]) for fold in folds}
     params = []
-    for i in range(responses.shape[1]):
+    for i, roi_id in enumerate(tqdm(roi_ids, desc=name, leave=False)):
+        def fit_roi():
+            res = {fold: fit_eb_srf(stim, responses[:, i], strfs_ridge[fold][i], fold_idxs[fold], prior)
+                   for fold in folds}
+            return {fold: r[0] for fold, r in res.items()}, res['train'][1]
+
+        roi_strfs, p = cached(f'{name}_roi{roi_id}', fit_roi)
         for fold in folds:
-            strfs[fold][i], p = fit_eb_srf(stim, responses[:, i], strfs_ridge[fold][i], fold_idxs[fold], prior)
+            strfs[fold][i] = roi_strfs[fold]
         params.append(p)
     val_cc = np.mean([colwise_cc(rf.predict_linear(stim, strfs[fold], shifts, fold_idxs[val_fold[fold]]),
                                  responses[fold_idxs[val_fold[fold]]]) for fold in ('train1', 'train2')], axis=0)
@@ -357,21 +364,29 @@ for field, df_ex_field in df_ex.groupby('field', sort=False):
     responses = get_responses(df_field)
     stim = rf.standardize_stim(mc.load_mc_movie(df_field.mc.iloc[0], MC_ARRAY_DIR, bin_xy=BIN_XY))
     bases = get_bases(stim)
-    feats = rf.compute_basis_features(stim, shifts, *bases)
-    grams = {fold: rf.centered_gram(feats, responses, fold_idxs[fold]) for fold in folds}
+    feats, grams = None, None  # computed on demand, only needed if a basis GLM is not cached yet
+
+    def fit_glm(method):
+        global feats, grams
+        if feats is None:
+            feats = rf.compute_basis_features(stim, shifts, *bases)
+            grams = {fold: rf.centered_gram(feats, responses, fold_idxs[fold]) for fold in folds}
+        return fit_basis_glm(feats, grams, bases, responses, method)
 
     field_strfs = {}
     for method in tqdm(METHODS, desc=field):
         t0 = time.time()
+        name = f'{field}_{method}'
         if method.startswith('sta'):
             clip_q = int(method.removeprefix('sta_clip')) if 'clip' in method else None
-            strfs, info = fit_sta(stim, responses, clip_q)
+            strfs, info = cached(name, lambda: fit_sta(stim, responses, clip_q))
         elif method == 'wsta':
-            strfs, info = fit_wsta(stim, responses)
+            strfs, info = cached(name, lambda: fit_wsta(stim, responses))
         elif method in ('ridge', 'lasso', 'enet'):
-            strfs, info = fit_basis_glm(feats, grams, bases, responses, method)
+            strfs, info = cached(name, lambda: fit_glm(method))
         elif method in ('ald', 'asd'):
-            strfs, info = fit_eb(stim, responses, field_strfs['ridge'], method)
+            strfs, info = cached(name, lambda: fit_eb(stim, responses, field_strfs['ridge'], method,
+                                                      df_field.roi_id, name))
         timings.append(dict(field=field, method=method, time_s=time.time() - t0, n_rois=responses.shape[1]))
         field_strfs[method] = strfs
 
@@ -380,7 +395,7 @@ for field, df_ex_field in df_ex.groupby('field', sort=False):
             all_strfs[(field, roi_id, method)] = strfs['train'][i]
             rows.append(dict(field=field, roi_id=roi_id, method=method, **{k: v[i] for k, v in scores.items()},
                              **{k: v[i] for k, v in info.items()}))
-    del feats, grams
+    feats = grams = None
 
 df_scores = pd.DataFrame(rows).merge(df_ex, on=['field', 'roi_id'])
 pd.DataFrame(timings).groupby('method', sort=False).time_s.sum().round(1)

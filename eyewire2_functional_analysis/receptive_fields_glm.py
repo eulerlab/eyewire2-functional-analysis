@@ -114,15 +114,18 @@ def fit_spline_glm(stim: np.ndarray, response: np.ndarray, n_past: int, df: tupl
 
 def fit_spline_glm_batch(stim: np.ndarray, responses: np.ndarray, n_past: int, df: tuple[int, int, int],
                          betas=(0.001, 0.01, 0.1), alpha: float = 1., n_future: int = 0, frac_dev: float = 0.2,
-                         step_size: float = 0.1, n_iters: int = 1000, roi_chunk: int | None = None) -> tuple:
+                         step_size: float = 0.1, n_iters: int = 1000, roi_chunk: int | None = None,
+                         train_idx: np.ndarray | None = None, dev_idx: np.ndarray | None = None,
+                         return_all_betas: bool = False) -> tuple:
     """Fit the spline GLM of ``fit_spline_glm`` for many ROIs and all betas at once (``jax.vmap``).
 
     All ROIs share the stimulus, so the spline-projected design matrix is built once; only the response differs.
     The Adam optimization from RFEst is replicated for every (beta, ROI) pair in a single jitted loop with a fixed
     number of iterations (no per-fit early stopping). Unlike ``fit_spline_glm``, the design matrix is built from the
-    continuous stimulus, so the dev block has real stimulus history in its first frames. The best beta is picked per
-    ROI by the correlation on the dev block (the last ``frac_dev`` of the frames); models are fitted on the training
-    block only.
+    continuous stimulus, so the dev frames have real stimulus history. Models are fitted on the training frames only.
+    The best beta is picked per ROI by the correlation on the dev frames. By default, the last ``frac_dev`` of the
+    frames are the dev frames; ``train_idx`` / ``dev_idx`` (frame indices) override this, e.g. for movies with
+    separate train and test clips. Without dev frames, the first beta is used.
 
     Args:
         stim: Stimulus, shape ``(n_frames, ny, nx, n_channels)``. Should be standardized.
@@ -130,11 +133,15 @@ def fit_spline_glm_batch(stim: np.ndarray, responses: np.ndarray, n_past: int, d
         n_past, df, betas, alpha, n_future, frac_dev, step_size: As in ``fit_spline_glm``.
         n_iters: Number of Adam iterations.
         roi_chunk: Fit this many ROIs at a time to limit GPU memory (default: all at once).
+        train_idx: Frame indices to fit on. Default: frames ``n_past`` to the start of the default dev frames.
+        dev_idx: Frame indices to select beta on. Default: the last ``frac_dev`` of the frames, or none.
+        return_all_betas: Also return the STRFs of all betas in ``info['strfs_all']``,
+            shape ``(n_betas, n_rois, n_t, ny, nx, n_channels)``, e.g. to choose beta by CV over several fits.
 
     Returns:
         tuple: ``(strfs, info)``. ``strfs`` has shape ``(n_rois, n_t, ny, nx, n_channels)``; ``info`` holds
-        ``rf_time``, ``beta`` and ``intercept`` and ``train_cc`` (each ``(n_rois,)``) and ``dev_ccs``
-        (``(n_betas, n_rois)``).
+        ``rf_time``, ``beta``, ``intercept`` and ``train_cc`` (each ``(n_rois,)``), ``dev_ccs`` and
+        ``intercepts_all`` (each ``(n_betas, n_rois)``).
     """
     assert rfest is not None, 'rfest (and jax) are required'
     stim = np.asarray(stim, dtype=np.float32)
@@ -150,17 +157,21 @@ def fit_spline_glm_batch(stim: np.ndarray, responses: np.ndarray, n_past: int, d
         warnings.warn(f'df clipped from {tuple(df)} to {df_clipped}')
     betas = np.sort(np.atleast_1d(betas).astype(float))
 
-    # Design matrix projected on the spline basis, channels side by side: (n_frames - n_past, n_ch * n_basis)
+    # Design matrix projected on the spline basis, channels side by side: (n_frames, n_ch * n_basis)
     spline = np.asarray(build_spline_matrix(dims=dims, df=df_clipped, smooth='cr', dtype=np.float32))
     n_basis = spline.shape[1]
     xs = np.concatenate([
-        build_design_matrix(stim[..., c].reshape(n_frames, -1), n_t, shift=-n_future, dtype=np.float32)[n_past:] @ spline
+        build_design_matrix(stim[..., c].reshape(n_frames, -1), n_t, shift=-n_future, dtype=np.float32) @ spline
         for c in range(n_ch)], axis=1)
-    y_all = responses[n_past:]
 
-    n_train = int(round((n_frames - n_past) * (1. - frac_dev))) if (frac_dev > 0 and betas.size > 1) \
-        else n_frames - n_past
-    x_tr, y_tr, x_dev, y_dev = xs[:n_train], y_all[:n_train], xs[n_train:], y_all[n_train:]
+    if train_idx is None:
+        n_train = int(round(n_frames * (1. - frac_dev))) if (frac_dev > 0 and betas.size > 1) else n_frames
+        train_idx = np.arange(n_past, n_train)
+        if dev_idx is None:
+            dev_idx = np.arange(n_train, n_frames)
+    has_dev = dev_idx is not None and len(dev_idx) > 0
+    x_tr, y_tr = xs[train_idx], responses[train_idx]
+    n_train = len(train_idx)
 
     # Initialization: least squares with intercept (as rfest 'mle'), shared design -> one solve for all ROIs
     x1 = np.hstack([np.ones((n_train, 1), np.float32), x_tr]).astype(np.float64)
@@ -199,8 +210,8 @@ def fit_spline_glm_batch(stim: np.ndarray, responses: np.ndarray, n_past: int, d
 
     pred_tr = np.einsum('nk,bkr->bnr', x_tr, w) + b[:, None]
     train_cc = _corrcoef_cols(y_tr, pred_tr)  # (n_betas, n_rois)
-    if n_train < y_all.shape[0]:
-        dev_ccs = _corrcoef_cols(y_dev, np.einsum('nk,bkr->bnr', x_dev, w) + b[:, None])
+    if has_dev:
+        dev_ccs = _corrcoef_cols(responses[dev_idx], np.einsum('nk,bkr->bnr', xs[dev_idx], w) + b[:, None])
         best = np.nanargmax(np.where(np.isfinite(dev_ccs), dev_ccs, -np.inf), axis=0)
     else:
         dev_ccs = np.full((betas.size, n_rois), np.nan)
@@ -210,7 +221,10 @@ def fit_spline_glm_batch(stim: np.ndarray, responses: np.ndarray, n_past: int, d
     w_best = w[best, :, roi_idx].reshape(n_rois, n_ch, n_basis)  # (n_rois, n_ch, n_basis)
     strfs = np.einsum('pk,rck->rpc', spline, w_best).reshape((n_rois,) + dims + (n_ch,))
     info = dict(rf_time=np.arange(-n_past + 1, n_future + 1), beta=betas[best], intercept=b[best, roi_idx],
-                train_cc=train_cc[best, roi_idx], dev_ccs=dev_ccs)
+                train_cc=train_cc[best, roi_idx], dev_ccs=dev_ccs, intercepts_all=b)
+    if return_all_betas:
+        w_all = w.reshape(betas.size, n_ch, n_basis, n_rois)
+        info['strfs_all'] = np.einsum('pk,bckr->brpc', spline, w_all).reshape((betas.size, n_rois) + dims + (n_ch,))
     return strfs, info
 
 

@@ -126,5 +126,6 @@ issues/*
 !data/stimuli/global_chirp/chirp1000_setup3_movie_and_trigger.npz
 !data/stimuli/moving_bar/DS_setup3_movie_and_trigger.npz
 !*/README.md
+!images/celltype_explorer_screenshot.png
 data/classifier-training/
 scripts/analysis/reproduce_classifier

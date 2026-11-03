@@ -44,9 +44,9 @@ build-backend = "setuptools.build_meta"
 [tool.uv.sources]
 # On Windows, the PyPI pywarper release can crash: when the optional scikit-sparse
 # speedup isn't installed, it prints a non-ASCII fallback warning that a default
-# (cp1252) Windows console can't encode. The local checkout has that fixed, so use
-# it there; everywhere else stays on the normal PyPI release.
+# (cp1252) Windows console can't encode. The "windows-fix" branch has that fixed, so
+# use it there; everywhere else stays on the normal PyPI release.
 pywarper = [
-    { path = "../pywarper", editable = true, marker = "sys_platform == 'win32'" },
+    { git = "https://github.com/berenslab/pywarper", branch = "windows-fix", marker = "sys_platform == 'win32'" },
 ]
 

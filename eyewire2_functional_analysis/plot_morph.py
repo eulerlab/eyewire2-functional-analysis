@@ -2,6 +2,7 @@ import numpy as np
 import skeliner as sk
 from matplotlib import pyplot as plt
 from matplotlib import patches as patches
+from matplotlib.collections import LineCollection
 
 from eyewire2_functional_analysis import registration
 from eyewire2_functional_analysis.plot_traces import plot_bar_dir_grid
@@ -136,6 +137,30 @@ def plot_em_axis_indicator(ax, reg, field=None, direction='em_to_2p', center=Non
     return x_end, y_end
 
 
+def plot_skel_lines(ax, skel, plane='xy', color='black', lw=0.5, alpha=0.9, soma_color=None):
+    """Draw `skel`'s edges as a flat `LineCollection`, projected onto `plane` -- no radii, no
+    mesh-density background, just coloured line segments plus a small soma marker.
+
+    A cheap drop-in replacement for `skeliner.plot.projection` for this repo's per-cell detail
+    views (called on every ROI/cell selection): `projection` also draws radius-tapered edge
+    polygons and, more importantly, ends with a bare `plt.tight_layout()` call, which relayouts
+    *pyplot's current figure* -- not just this axes -- so embedding it in a multi-panel figure
+    (e.g. `render_cell`'s chirp/bar/mouse-cam grid) triggers a full-figure relayout on every
+    single skeleton render. `plot_morph` already sets its own axis limits/labels/aspect right
+    after this call, so skipping `projection`'s own cosmetics (which get overwritten anyway)
+    is safe.
+    """
+    ix, iy = ('xyz'.index(plane[0]), 'xyz'.index(plane[1]))
+    xy = skel.nodes[:, [ix, iy]]
+    segments = np.stack([xy[skel.edges[:, 0]], xy[skel.edges[:, 1]]], axis=1)
+    ax.add_collection(LineCollection(segments, colors=color, linewidths=lw, alpha=alpha))
+
+    soma_xy = skel.soma.center[[ix, iy]]
+    soma_r = getattr(skel.soma, 'equiv_radius', 0) or 0
+    ax.add_patch(patches.Circle(soma_xy, max(soma_r, 1e-6), facecolor=soma_color or color,
+                                 edgecolor='none', alpha=alpha * 0.6))
+
+
 def plot_morph(ax, row, rad: float | None = 150, reg=None, rotation_deg=None, annotate_orientation=None,
                show_em_axes=None, min_rad: float | None = None, margin=10, scale_bar_um: float | None = None):
     """Plot an XY morphology projection of a skeleton centred on its soma.
@@ -182,7 +207,7 @@ def plot_morph(ax, row, rad: float | None = 150, reg=None, rotation_deg=None, an
     elif rotation_deg:
         skel = rotate_skel(skel, rotation_deg=rotation_deg)
 
-    sk.plot.projection(skel, ax=ax, plane='xy')  # , color_by="ntype", skel_cmap='Grays')
+    plot_skel_lines(ax, skel)
     sx, sy, sz = skel.soma.center
 
     if rad is None:

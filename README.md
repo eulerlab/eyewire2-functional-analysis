@@ -12,7 +12,7 @@ This repository hosts tools to analyse the functional data from OGB-1 recordings
 
 The following files are included:
 - tutorial scripts to facilitate data exploration [scripts/tutorial/*.py](scripts/tutorial/)
-- an interactive EM ↔ function explorer tool [scripts/tools/interactive_explorer/](scripts/tools/interactive_explorer/)
+- an interactive EM ↔ function explorer tool, with cell-, timeline-, and cell-type-level views [scripts/tools/interactive_explorer/](scripts/tools/interactive_explorer/)
 - analysis scripts [scripts/analysis/*.py](scripts/analysis/)
 - preprocessing scripts, e.g. for the 2P-to-EM coordinate registration [scripts/preprocessing/*.py](scripts/preprocessing/)
 - spreadsheet data that are needed to map 2p to EM data (proofread cell main list, 2P-to-EM ROI mapping), downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/spreadsheets) into the shared `eyewire2-data/spreadsheets/` folder (see [Downloading the data](#downloading-the-data) below)
@@ -82,11 +82,18 @@ See the tutorial scripts for full usage examples:
 
 ### Interactive explorer
 
-[scripts/tools/interactive_explorer/interactive_explorer.py](scripts/tools/interactive_explorer/interactive_explorer.py) lets you pick a 2P ROI — via the field/ROI dropdowns, or by clicking a point in the retinal-position scatter — and see its EM skeleton next to its chirp, moving-bar, and mouse-cam responses. Built with [Panel](https://panel.holoviz.org/); run it either:
+[scripts/tools/interactive_explorer/interactive_explorer.py](scripts/tools/interactive_explorer/interactive_explorer.py) has three tabs, built with [Panel](https://panel.holoviz.org/):
+- **Cell explorer** — pick a 2P ROI, via the field/ROI dropdowns or by clicking a point in the retinal-position scatter, and see its EM skeleton next to its chirp, moving-bar, and mouse-cam responses.
+- **Stimulus timeline** — scrub absolute session time and see the ROI traces recorded at that instant, plus the field/stimulus footprint that was on screen.
+- **Cell type explorer** — pick a cell class, morphological cell type, and recording field (or all fields), and see every matching cell's EM skeleton — placed at its true position in the shared retinal frame — next to its chirp, moving-bar, natural-movie, and direction-tuning responses, overlaid across cells with the across-cell mean +/- SD. Click a cell's skeleton/marker to highlight it across all panels.
+
+Run it either:
 - as a standalone app, no Jupyter needed: `uv run panel serve scripts/tools/interactive_explorer/interactive_explorer.py --show`
 - or opened cell-by-cell in Jupyter/VS Code, like the other scripts in this repo.
 
 In addition to `data/data-2p/`, this tool needs the EM skeletons (`data/swc/`) and the master spreadsheets (`data/spreadsheets/`) to link 2P ROIs to their EM reconstructions.
+
+![Cell type explorer screenshot](images/celltype_explorer_screenshot.png)
 
 ### 2P ↔ EM coordinate registration
 

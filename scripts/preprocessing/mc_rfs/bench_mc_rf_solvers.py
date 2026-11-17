@@ -40,7 +40,7 @@ args = parser.parse_args()
 # Same stimulus / basis / penalties as fit_mc_rfs.py (keep in sync)
 BIN_XY, DUR_PAST_S, DUR_FUTURE_S, DF_T, DF_S = 2, 1.2, 0.3, 15, 14
 TRAIN_BLOCKS, TEST_BLOCKS = ('train1', 'train2'), ('test1', 'test2', 'test3')
-LASSO_ALPHAS = np.logspace(-4, 0, 8)
+LASSO_ALPHAS = np.logspace(-3, 0, 7)  # weaker penalties: rarely best, chance-level test cc, slow to converge
 
 FISTA = dict(num_iters=5000, gtol=1e-4, tolerance=3)
 ADAM = dict(num_iters=3000, min_iters=300, atol=1e-6, tolerance=20, step_size=1e-4, step_size_finetune=1e-3)
@@ -55,6 +55,7 @@ CONFIGS = [
     ('fista jac gtol 1e-4', 'fista', dict(FISTA, precondition='jacobi')),
     ('fista jac gtol 3e-5', 'fista', dict(FISTA, gtol=3e-5, precondition='jacobi')),
     ('fista jac step x2', 'fista', dict(FISTA, precondition='jacobi', step_scale=2.)),
+    ('fista jac 2000 it', 'fista', dict(FISTA, gtol=1e-3, precondition='jacobi', num_iters=2000)),
     ('adam 1e-4/1e-3 (old)', 'adam', ADAM),
     ('adam 1e-3/1e-3', 'adam', dict(ADAM, step_size=1e-3)),
 ]

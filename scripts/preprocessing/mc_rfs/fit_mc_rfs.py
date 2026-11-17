@@ -72,7 +72,7 @@ TRAIN_BLOCKS = ('train1', 'train2')
 TEST_BLOCKS = ('test1', 'test2', 'test3')
 DF_T, DF_S = 15, 14
 # Lasso path (penalties relative to alpha_max) and solver settings (FISTA, see glm.fit_fista)
-LASSO_ALPHAS = np.logspace(-4, 0, 8)
+LASSO_ALPHAS = np.logspace(-3, 0, 7)  # weaker penalties: rarely best, chance-level test cc, slow to converge
 SOLVER = 'fista'
 FIT_KW = dict(num_iters=5000, gtol=1e-4, tolerance=3, eps_mean=1e-3)  # TODO: settle with bench_mc_rf_solvers.py
 # Non-zero weights: exact for FISTA; for Adam (no exact zeros) |w| > NONZERO_THRESH * max|w|

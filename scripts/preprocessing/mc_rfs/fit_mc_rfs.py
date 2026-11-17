@@ -1,8 +1,8 @@
 """Mouse-cam (MC) receptive fields of all 2P ROIs: lasso GLM penalty sweep with a ReLU output non-linearity.
 
 Per ROI, a lasso GLM ``y ~ relu(X w + b)`` on the separable B-spline basis (t x y x x x channel) of the MC movie is
-fitted for every penalty of ``LASSO_ALPHAS`` (relative to the smallest penalty giving an all-zero RF, large to small,
-warm-started; ``receptive_fields_glm.fit_lasso_path``, a trimmed, dependency-free version of the RFEst GLM
+fitted with FISTA for every penalty of ``LASSO_ALPHAS`` (relative to the smallest penalty giving an all-zero RF, large to
+small, warm-started; ``receptive_fields_glm.fit_lasso_path``, a trimmed, dependency-free version of the RFEst GLM
 (https://github.com/berenslab/RFEst) as extended in djimaging). All ROIs of a field are fitted jointly (up to
 ``--batch-size``), which is much faster on a GPU than one by one and gives the same fits up to floating point noise:
 
@@ -71,10 +71,10 @@ DUR_PAST_S, DUR_FUTURE_S = 1.2, 0.3
 TRAIN_BLOCKS = ('train1', 'train2')
 TEST_BLOCKS = ('test1', 'test2', 'test3')
 DF_T, DF_S = 15, 14
-# Lasso path (penalties relative to alpha_max) and Adam settings
+# Lasso path (penalties relative to alpha_max) and solver settings (FISTA, see glm.fit_fista)
 LASSO_ALPHAS = np.logspace(-4, 0, 8)
-FIT_KW = dict(num_iters=3000, min_iters=300, atol=1e-6, tolerance=20, step_size=1e-4, step_size_finetune=1e-3,
-              eps_mean=1e-3)
+SOLVER = 'fista'
+FIT_KW = dict(num_iters=3000, rtol=1e-5, tolerance=5, eps_mean=1e-3)
 NONZERO_THRESH = 1e-2  # a weight counts as non-zero if |w| > NONZERO_THRESH * max|w|
 # sRF fit: DoG per channel, soft prior pulling the centers towards the window center (= field center), soft penalty on
 # the green-UV center distance relative to the center sizes
@@ -85,8 +85,8 @@ DOG_PARAMS = ('amp', 'polarity', 'x0', 'y0', 'sx', 'sy', 'theta', 'r2', 'amp_s',
               'surround_rel_amp')
 
 SETTINGS_KEY = hashlib.md5(repr((
-    BIN_XY, DUR_PAST_S, DUR_FUTURE_S, TRAIN_BLOCKS, TEST_BLOCKS, DF_T, DF_S, list(LASSO_ALPHAS), sorted(FIT_KW.items()),
-    NONZERO_THRESH, SRF_FIT_KIND, CENTER_PRIOR_SD_UM, CENTER_PRIOR_WEIGHT, COUPLING_WEIGHT, 'v1')).encode()).hexdigest()[:8]
+    BIN_XY, DUR_PAST_S, DUR_FUTURE_S, TRAIN_BLOCKS, TEST_BLOCKS, DF_T, DF_S, list(LASSO_ALPHAS), SOLVER, sorted(FIT_KW.items()),
+    NONZERO_THRESH, SRF_FIT_KIND, CENTER_PRIOR_SD_UM, CENTER_PRIOR_WEIGHT, COUPLING_WEIGHT, 'v2')).encode()).hexdigest()[:8]
 
 blocks = mc.get_frame_blocks()
 train_idxs = np.where(np.isin(blocks, TRAIN_BLOCKS))[0]
@@ -133,7 +133,7 @@ def fit_rois(rows, x_train, feats, bases):
     responses = [get_response(row) for row in rows]
     y_train = np.stack([r[train_idxs] for r in responses], axis=1).astype(np.float64)  # (n_train, n_rois)
     y_std = y_train.std(axis=0)
-    weights, intercepts, infos = glm.fit_lasso_path(x_train, y_train / y_std, LASSO_ALPHAS, **FIT_KW)
+    weights, intercepts, infos = glm.fit_lasso_path(x_train, y_train / y_std, LASSO_ALPHAS, solver=SOLVER, **FIT_KW)
     return [evaluate_roi(responses[r], weights[r], intercepts[r], y_std[r], infos[r], feats, bases)
             for r in range(len(rows))]
 

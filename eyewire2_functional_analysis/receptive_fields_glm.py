@@ -1,13 +1,17 @@
-"""L1-penalized (lasso) GLM receptive fields with a ReLU output non-linearity, fitted with Adam in JAX.
+"""L1-penalized (lasso) GLM receptive fields with a ReLU output non-linearity, fitted with FISTA or Adam in JAX.
 
 Model: ``y ~ relu(X w + b)`` with ``X`` a pre-computed design matrix (e.g. the stimulus projected onto a separable
 B-spline basis, see ``receptive_fields.compute_basis_features``). Cost: ``mean((y - y_pred) ** 2) + beta * ||w||_1``.
+
+The default solver is FISTA (``fit_fista``): proximal gradient steps (soft-thresholding, so weights are exactly zero
+where the penalty wins) with Nesterov momentum and adaptive restart. It needs far fewer iterations than Adam and
+converges to a lower cost. The Adam solver (``fit_adam``) reproduces RFEst, see below.
 
 Based on RFEst (https://github.com/berenslab/RFEst, MIT license), via the RFEst GLM extension of
 djimaging (eulerlab), which subclasses ``rfest.GLM`` but overrides its design matrix handling, initialization and
 optimization. This module is that extension trimmed to the code path used here (pre-computed design matrix, fitted
 intercept, ReLU output, no dev set, no CI), without the dependency on rfest: forward pass, cost (RFEst's ``loss_mse`` and
-``loss_penalty`` with ``alpha=1``, re-implemented below), Adam and stopping criteria are unchanged, so the results
+``loss_penalty`` with ``alpha=1``, re-implemented below), Adam and stopping criteria are unchanged, so the Adam results
 are identical to ``rfest_glm.GLM(distr='gaussian', output_nonlinearity='relu')`` up to floating point differences. Adam
 does not give exact zeros, weights are only shrunk towards zero.
 
@@ -138,21 +142,124 @@ def fit_adam(x, y, p0, beta, num_iters=3000, step_size=1e-3, tolerance=20, atol=
     return s['best_params'], infos
 
 
-def fit_lasso_path(x, y, alphas_rel, eps_mean=1e-3, step_size=3e-3, step_size_finetune=1e-3, **kwargs):
+def lipschitz_constant(x, n_iter=100, margin=1.05, seed=0):
+    """Lipschitz constant ``L = 2 / n * lambda_max([X 1]' [X 1])`` of the gradient of the MSE of the linear model
+    (power iteration, times ``margin`` since power iteration under-estimates ``lambda_max``). It also bounds the
+    curvature of the MSE of the ReLU model, whose Gauss-Newton matrix ``2 / n [X 1]' D [X 1]`` has ``0 <= D <= I``."""
+    x = to_device(x)
+    n, n_feat = x.shape
+    v = jnp.asarray(np.random.default_rng(seed).standard_normal(n_feat + 1), _DTYPE)
+
+    def body(_, v):
+        u = x @ v[:-1] + v[-1]
+        v = jnp.concatenate([x.T @ u, u.sum()[None]])
+        return v / jnp.linalg.norm(v)
+
+    v = lax.fori_loop(0, n_iter, body, v / jnp.linalg.norm(v))
+    u = x @ v[:-1] + v[-1]
+    return margin * 2. * float(u @ u) / n
+
+
+@functools.lru_cache(maxsize=None)
+def _get_fista_chunk_runner(num_iters, rtol, tolerance):
+    """`run_chunk` performs `_CHUNK_SIZE` FISTA steps (with adaptive restart) and updates the per-response stopping
+    state. Compiled once per settings and input shapes."""
+
+    def body(data, s, i):
+        x, y, beta, step = data['x'], data['y'], data['beta'], data['step']
+        n = x.shape[0]
+        # gradient of the MSE at the extrapolated point z
+        out = x @ s['zw'] + s['zb']
+        r = jnp.where(out > 0., out - y, 0.)
+        gw, gb = (2. / n) * (x.T @ r), (2. / n) * r.sum(axis=0)
+        # proximal step: soft-thresholding of the weights, the intercept is not penalized
+        vw = s['zw'] - step * gw
+        w = jnp.sign(vw) * jnp.maximum(jnp.abs(vw) - step * beta, 0.)
+        b = s['zb'] - step * gb
+        # adaptive restart (O'Donoghue & Candes 2015): drop the momentum if it points against the proximal step
+        restart = (jnp.sum((s['zw'] - w) * (w - s['w']), axis=0) + (s['zb'] - b) * (b - s['b'])) > 0.
+        t = jnp.where(restart, 1., (1. + jnp.sqrt(1. + 4. * s['t'] ** 2)) / 2.)
+        mom = jnp.where(restart, 0., (s['t'] - 1.) / t)
+        zw, zb = w + mom * (w - s['w']), b + mom * (b - s['b'])
+        # stop once the relative parameter change is below rtol in `tolerance` consecutive steps
+        change = jnp.maximum(jnp.max(jnp.abs(w - s['w']), axis=0), jnp.abs(b - s['b']))
+        scale = jnp.maximum(jnp.max(jnp.abs(w), axis=0), jnp.abs(b))
+        live = s['active'] & (i < num_iters)
+        n_small = jnp.where(live, jnp.where(change <= rtol * scale, s['n_small'] + 1, 0), s['n_small'])
+        stop = live & (n_small >= tolerance)
+        return dict(
+            w=jnp.where(live, w, s['w']), b=jnp.where(live, b, s['b']), zw=jnp.where(live, zw, s['zw']),
+            zb=jnp.where(live, zb, s['zb']), t=jnp.where(live, t, s['t']), n_small=n_small,
+            n_restart=s['n_restart'] + (live & restart), active=s['active'] & ~stop,
+            n_iter=jnp.where(stop, i + 1, s['n_iter'])), None
+
+    @jit
+    def run_chunk(s, i0, data):
+        s, _ = lax.scan(functools.partial(body, data), s, i0 + jnp.arange(_CHUNK_SIZE))
+        return s
+
+    return run_chunk
+
+
+def fit_fista(x, y, w0, b0, beta, lipschitz, num_iters=3000, rtol=1e-5, tolerance=5):
+    """Minimize the cost of each response with FISTA (accelerated proximal gradient with adaptive restart) from
+    ``(w0, b0)``, step size ``1 / lipschitz``. A fit stops once the largest change of its parameters was at most ``rtol``
+    times its largest absolute parameter in ``tolerance`` consecutive steps. Weights are exactly zero where the penalty
+    wins.
+
+    Args:
+        x: Design matrix ``(n_samples, n_features)``.
+        y: Responses ``(n_samples, n_responses)``.
+        w0, b0: Initial weights ``(n_features, n_responses)`` and intercepts ``(n_responses,)``.
+        beta: Penalty per response ``(n_responses,)``.
+        lipschitz: See ``lipschitz_constant``.
+
+    Returns:
+        tuple: Weights, intercepts and a list of info dicts per response (``n_iter``, ``n_restart``, ``cost`` = final
+        train cost, ``stop`` = ``'train_stop'`` or ``'maxiter_stop'``).
+    """
+    run_chunk = _get_fista_chunk_runner(num_iters, rtol, tolerance)
+    data = dict(x=x, y=jnp.asarray(y, _DTYPE), beta=jnp.asarray(beta, _DTYPE), step=jnp.asarray(1. / lipschitz, _DTYPE))
+    w0, b0 = jnp.asarray(w0, _DTYPE), jnp.asarray(b0, _DTYPE)
+    n_resp = data['y'].shape[1]
+    s = dict(w=w0, b=b0, zw=w0, zb=b0, t=jnp.ones(n_resp, _DTYPE), n_small=jnp.zeros(n_resp, jnp.int32),
+             n_restart=jnp.zeros(n_resp, jnp.int32), active=jnp.ones(n_resp, bool),
+             n_iter=jnp.full(n_resp, num_iters, jnp.int32))
+
+    for i_chunk in range(int(np.ceil(num_iters / _CHUNK_SIZE))):
+        s = run_chunk(s, i_chunk * _CHUNK_SIZE, data)
+        if not bool(jnp.any(s['active'])):
+            break
+
+    p = dict(stimulus=s['w'], intercept=dict(stimulus=jnp.zeros_like(s['b']), **{'global': s['b']}))
+    costs = np.asarray(_costs(p, x, data['y'], data['beta'])[1])
+    active, n_iter, n_restart = (np.asarray(s[k]) for k in ('active', 'n_iter', 'n_restart'))
+    infos = [dict(n_iter=int(n_iter[r]), n_restart=int(n_restart[r]), cost=float(costs[r]),
+                  stop='maxiter_stop' if active[r] else 'train_stop') for r in range(n_resp)]
+    return s['w'], s['b'], infos
+
+
+def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e-3, step_size_finetune=1e-3,
+                   **kwargs):
     """Lasso GLM ``y ~ relu(X w + b)`` for all penalties ``alphas_rel`` (relative to ``beta_max``), large to small.
 
     The first (largest) penalty starts from zero weights and ``b = max(mean(y), eps_mean)`` (so the zero-weight model
-    predicts the mean response and the ReLU is not dead), the others warm-start from the previous penalty with
-    ``step_size_finetune``. ``beta_max = 2 max|X'y| / n`` (centered) is the smallest penalty that gives all-zero weights
-    for the linear model (only approximate with the ReLU). Several responses are fitted jointly (see module docstring),
-    each with its own ``beta_max``.
+    predicts the mean response and the ReLU is not dead), the others warm-start from the previous penalty.
+    ``beta_max = 2 max|X'y| / n`` (centered) is the smallest penalty that gives all-zero weights for the linear model
+    (only approximate with the ReLU). Several responses are fitted jointly (see module docstring), each with its own
+    ``beta_max``.
+
+    Two solvers minimize the same cost: ``'fista'`` (``fit_fista``; converges in far fewer iterations and gives exact
+    zeros) and ``'adam'`` (``fit_adam``, as RFEst; ``step_size`` for the first penalty, ``step_size_finetune`` for the
+    warm-started ones).
 
     Args:
         x: Design matrix ``(n_samples, n_features)``, float32 (numpy or jax array, see ``to_device``).
         y: Response ``(n_samples,)`` or responses ``(n_samples, n_responses)``, scaled (e.g. by their std) but NOT
             centered, so that their mean is positive.
         alphas_rel: Penalties relative to ``beta_max``.
-        **kwargs: Passed to ``fit_adam``.
+        solver: ``'fista'`` or ``'adam'``.
+        **kwargs: Passed to ``fit_fista`` or ``fit_adam``.
 
     Returns:
         tuple: weights ``(n_alphas, n_features)`` and intercepts ``(n_alphas,)`` in the order of ``alphas_rel``, and a
@@ -174,14 +281,25 @@ def fit_lasso_path(x, y, alphas_rel, eps_mean=1e-3, step_size=3e-3, step_size_fi
                             **{'global': jnp.asarray(np.maximum(y.mean(axis=0), eps_mean), _DTYPE)}))
     y = y.astype(_DTYPE)
 
+    if solver == 'fista':
+        lipschitz = lipschitz_constant(x)
+        w, b = p['stimulus'], p['intercept']['global']
+    elif solver != 'adam':
+        raise ValueError(f'Unknown solver {solver!r}.')
+
     weights, intercepts = np.zeros((n_resp, alphas_rel.size, n_feat), _DTYPE), np.zeros((n_resp, alphas_rel.size))
     infos = [[] for _ in range(n_resp)]
     for k, a in enumerate(np.argsort(alphas_rel)[::-1]):  # large penalty first
         t0 = time.time()
-        p, info = fit_adam(x, y, p, beta=alphas_rel[a] * beta_max,
-                           step_size=step_size if k == 0 else step_size_finetune, **kwargs)
-        weights[:, a] = np.asarray(p['stimulus']).T
-        intercepts[:, a] = np.asarray(p['intercept']['stimulus'], float) + np.asarray(p['intercept']['global'], float)
+        beta = alphas_rel[a] * beta_max
+        if solver == 'fista':
+            w, b, info = fit_fista(x, y, w, b, beta, lipschitz, **kwargs)
+            weights[:, a], intercepts[:, a] = np.asarray(w).T, np.asarray(b, float)
+        else:
+            p, info = fit_adam(x, y, p, beta, step_size=step_size if k == 0 else step_size_finetune, **kwargs)
+            weights[:, a] = np.asarray(p['stimulus']).T
+            intercepts[:, a] = (np.asarray(p['intercept']['stimulus'], float)
+                                + np.asarray(p['intercept']['global'], float))
         dt = time.time() - t0
         for r in range(n_resp):
             infos[r].append(dict(alpha_idx=int(a), **info[r], time_s=dt))

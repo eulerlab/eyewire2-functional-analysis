@@ -12,11 +12,12 @@ Produced by `scripts/preprocessing/mc_rfs/fit_mc_rfs.py` in eyewire2-functional-
   z-scored. The movie is centered on the recording field.
 - **Response**: the positive part of the derivative of `mc_pp_trace`, sampled at the movie frame times (30 Hz).
 - **Model**: lasso GLM `y ~ relu(X w + b)`. `X` is the stimulus projected onto a separable cubic B-spline basis: 15
-  functions over time lags from -1.2 s to +0.3 s, 14 x 14 over space, and the 2 channels. The fit uses Adam (JAX) on the
-  MSE plus an L1 penalty on `w`, with the response divided by its std. It is trained on both training sequences
-  (`train1` + `train2`, 2 x 54 five-second clips) and has no cross-validation. The implementation is based on the GLM
-  of RFEst (https://github.com/berenslab/RFEst).
-- **Penalty sweep**: 7 penalties, log-spaced from 1e-3 to 1e-1 relative to `alpha_max`. `alpha_max` is the smallest
+  functions over time lags from -1.2 s to +0.3 s, 14 x 14 over space, and the 2 channels. The fit minimizes the MSE plus
+  an L1 penalty on `w`, with the response divided by its std, using FISTA (accelerated proximal gradient with adaptive
+  restart, JAX), which gives exact zeros. It is trained on both training sequences (`train1` + `train2`, 2 x 54
+  five-second clips) and has no cross-validation. The model and cost are those of the GLM of RFEst
+  (https://github.com/berenslab/RFEst).
+- **Penalty sweep**: 8 penalties, log-spaced from 1e-4 to 1 relative to `alpha_max`. `alpha_max` is the smallest
   penalty that gives all-zero weights in the linear model, so with the ReLU it is only approximate. The fits run from
   the largest to the smallest penalty, each warm-started from the previous one.
 - **Test**: the three repeats of the test sequence (`test1`-`test3`, 25 s each). The first 1.2 s of each repeat are
@@ -28,15 +29,15 @@ Produced by `scripts/preprocessing/mc_rfs/fit_mc_rfs.py` in eyewire2-functional-
 
 ## Per-penalty scores (arrays with one entry per penalty)
 
-- **mc_rf_alphas**: Penalties relative to `alpha_max`, shape `(7,)`.
-- **mc_rf_cc**: Test correlation between prediction and response, averaged over the 3 repeats, shape `(7,)`. NaN if the
+- **mc_rf_alphas**: Penalties relative to `alpha_max`, shape `(8,)`.
+- **mc_rf_cc**: Test correlation between prediction and response, averaged over the 3 repeats, shape `(8,)`. NaN if the
   prediction is constant, e.g. a ReLU that is always off.
-- **mc_rf_mse**: Test MSE, averaged over the 3 repeats, shape `(7,)`. In the raw units of the response, so it is not
+- **mc_rf_mse**: Test MSE, averaged over the 3 repeats, shape `(8,)`. In the raw units of the response, so it is not
   comparable across ROIs.
-- **mc_rf_cc_repeats**, **mc_rf_mse_repeats**: Same per repeat, shape `(7, 3)`.
-- **mc_rf_frac_nonzero**: Fraction of basis weights with `|w| > 0.01 max|w|`, shape `(7,)`. Adam gives no exact zeros.
-- **mc_rf_n_iter**: Number of Adam iterations, shape `(7,)`.
-- **mc_rf_converged**: False if the fit ran to the maximum of 3000 iterations, shape `(7,)`.
+- **mc_rf_cc_repeats**, **mc_rf_mse_repeats**: Same per repeat, shape `(8, 3)`.
+- **mc_rf_frac_nonzero**: Fraction of basis weights with `|w| > 0.01 max|w|`, shape `(8,)`.
+- **mc_rf_n_iter**: Number of FISTA iterations, shape `(8,)`.
+- **mc_rf_converged**: False if the fit ran to the maximum of 3000 iterations, shape `(8,)`.
 
 ## Selected penalty
 

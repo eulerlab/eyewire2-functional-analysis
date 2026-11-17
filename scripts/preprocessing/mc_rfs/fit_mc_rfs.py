@@ -3,7 +3,8 @@
 Per ROI, a lasso GLM ``y ~ relu(X w + b)`` on the separable B-spline basis (t x y x x x channel) of the MC movie is
 fitted for every penalty of ``LASSO_ALPHAS`` (relative to the smallest penalty giving an all-zero RF, large to small,
 warm-started; ``receptive_fields_glm.fit_lasso_path``, a trimmed, dependency-free version of the RFEst GLM
-(https://github.com/berenslab/RFEst) as extended in djimaging):
+(https://github.com/berenslab/RFEst) as extended in djimaging). All ROIs of a field are fitted jointly (up to
+``--batch-size``), which is much faster on a GPU than one by one and gives the same fits up to floating point noise:
 
 - **Response**: positive gradient of ``mc_pp_trace`` at the movie frame times, divided by its train std for the fit.
 - **Train** on both training sequences (``train1`` + ``train2``, 2 x 54 clips), **no cross-validation**.
@@ -32,6 +33,8 @@ parser.add_argument('--merge', action='store_true', help='Only merge the cached 
 parser.add_argument('--data-2p', default=None, help='data-2p folder (default: data_loader.DATA_2P).')
 parser.add_argument('--out-dir', default=None, help='Output folder (default: <repo>/data/mc_rfs).')
 parser.add_argument('--n-cpus', type=int, default=None, help='Limit the number of CPU threads.')
+parser.add_argument('--batch-size', type=int, default=128,
+                    help='Max. number of ROIs of a field fitted jointly (lower it if the GPU runs out of memory).')
 args = parser.parse_args()
 
 if args.n_cpus:
@@ -124,12 +127,19 @@ def describe_strf(strf):
     return out
 
 
-def fit_roi(row, feats, bases):
-    """Lasso path, test scores and the RF of the best penalty of one ROI. Returns (row dict, cache extras)."""
-    response = get_response(row)
-    y_train = response[train_idxs].astype(np.float64)
-    y_std = y_train.std()
-    weights, intercepts, infos = glm.fit_lasso_path(feats[train_idxs], y_train / y_std, LASSO_ALPHAS, **FIT_KW)
+def fit_rois(rows, x_train, feats, bases):
+    """Lasso paths of several ROIs of one field (fitted jointly on the GPU, every fit is the same as fitting the ROIs one
+    by one), their test scores and the RF of the best penalty. Returns a list of (row dict, cache extras) per ROI."""
+    responses = [get_response(row) for row in rows]
+    y_train = np.stack([r[train_idxs] for r in responses], axis=1).astype(np.float64)  # (n_train, n_rois)
+    y_std = y_train.std(axis=0)
+    weights, intercepts, infos = glm.fit_lasso_path(x_train, y_train / y_std, LASSO_ALPHAS, **FIT_KW)
+    return [evaluate_roi(responses[r], weights[r], intercepts[r], y_std[r], infos[r], feats, bases)
+            for r in range(len(rows))]
+
+
+def evaluate_roi(response, weights, intercepts, y_std, infos, feats, bases):
+    """Test scores and the RF of the best penalty of one ROI. Returns (row dict, cache extras)."""
     infos = sorted(infos, key=lambda d: d['alpha_idx'])
 
     resp = np.stack([response[idxs] for idxs in test_idxs])[:, n_eval_skip:]  # (3, n_t)
@@ -167,16 +177,20 @@ def fit_field(df_field):
     bases = (rf.bspline_basis(shifts.size, DF_T), rf.bspline_basis(stim.shape[1], DF_S),
              rf.bspline_basis(stim.shape[2], DF_S))
     feats = rf.compute_basis_features(stim, shifts, *bases)  # (n_frames, n_features) float32
+    x_train = glm.to_device(feats[train_idxs])  # transferred once per field
     os.makedirs(os.path.join(CACHE_DIR, SETTINGS_KEY), exist_ok=True)
-    for i, row in enumerate(todo):
+    for i0 in range(0, len(todo), args.batch_size):
+        batch = todo[i0:i0 + args.batch_size]
         t0 = time.time()
-        out, extras = fit_roi(row, feats, bases)
-        path = cache_path(row)
-        with open(path + '.tmp', 'wb') as f:
-            pickle.dump(dict(row=out, **extras), f)
-        os.replace(path + '.tmp', path)
-        print(f'  ROI {row.roi_id} ({i + 1}/{len(todo)}): best cc {out["mc_rf_best_cc"]:.3f} '
-              f'(alpha idx {out["mc_rf_best_alpha_idx"]}), {time.time() - t0:.0f} s', flush=True)
+        results = fit_rois(batch, x_train, feats, bases)
+        for i, (row, (out, extras)) in enumerate(zip(batch, results)):
+            path = cache_path(row)
+            with open(path + '.tmp', 'wb') as f:
+                pickle.dump(dict(row=out, **extras), f)
+            os.replace(path + '.tmp', path)
+            print(f'  ROI {row.roi_id} ({i0 + i + 1}/{len(todo)}): best cc {out["mc_rf_best_cc"]:.3f} '
+                  f'(alpha idx {out["mc_rf_best_alpha_idx"]})', flush=True)
+        print(f'  {len(batch)} ROIs in {time.time() - t0:.0f} s', flush=True)
 
 
 def merge(df_rois):

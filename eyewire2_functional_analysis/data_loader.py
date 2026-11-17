@@ -89,6 +89,28 @@ def load_df_fields(data_folder: str | Path = DATA_2P) -> pd.DataFrame:
     return df_fields
 
 
+MC_RF_FILE = 'df_eyewire2_roi_level_mc_rf.parquet'
+
+
+def load_df_mc_rfs(data_folder: str | Path | None = None) -> pd.DataFrame:
+    """Load the mouse-cam receptive fields (one row per ROI, see ``df_eyewire2_roi_level_mc_rf.md``).
+
+    Produced by ``scripts/preprocessing/mc_rfs/fit_mc_rfs.py``. Join to ``load_df_rois()`` on
+    ``experimenter, date, exp_num, field, roi_id``.
+
+    Args:
+        data_folder: Folder containing ``df_eyewire2_roi_level_mc_rf.parquet``. Defaults to ``DATA_2P`` if the file is
+            there (i.e. downloaded from Hugging Face), else to the local preprocessing output ``<repo>/data/mc_rfs``.
+
+    Returns:
+        pandas.DataFrame: ROI-level DataFrame with the ``mc_rf_*`` columns.
+    """
+    if data_folder is None:
+        data_folder = next((d for d in (DATA_2P, os.path.join(DATA_ROOT, 'mc_rfs'))
+                            if os.path.isfile(os.path.join(d, MC_RF_FILE))), DATA_2P)
+    return load_parquet_df(os.path.join(data_folder, MC_RF_FILE))
+
+
 def load_df_outline(data_folder: str | Path = DATA_2P) -> pd.DataFrame:
     """Load the outline parquet file from ``data_folder``.
 

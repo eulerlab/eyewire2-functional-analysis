@@ -264,3 +264,10 @@ def fit_srfs(srfs: np.ndarray, kind: str = 'dog', center_prior_sd: float = 4., c
                      surround_rel_amp=p[7])
         params.append(d)
     return fits, params
+
+
+def movie_to_retina(img: np.ndarray) -> np.ndarray:
+    """Reorient a movie-space image ``(rows, cols)`` to the retinal frame, to be shown with ``origin='lower'``:
+    x = nasal (columns), y = dorsal (rows). Assumed (from ``data/stimuli/README.md``): array row -> temporal (so
+    nasal = -row), array column -> ventral (so dorsal = -column), i.e. the transpose with both axes reversed."""
+    return img.T[::-1, ::-1]

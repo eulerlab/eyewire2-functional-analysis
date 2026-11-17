@@ -38,7 +38,9 @@ Produced by `scripts/preprocessing/mc_rfs/fit_mc_rfs.py` in eyewire2-functional-
 - **mc_rf_frac_nonzero**: Fraction of basis weights that are not exactly zero, shape `(8,)`. (With the Adam solver,
   which gives no exact zeros, the fraction with `|w| > 0.01 max|w|`.)
 - **mc_rf_n_iter**: Number of FISTA iterations, shape `(8,)`.
-- **mc_rf_converged**: False if the fit ran to the maximum of 3000 iterations, shape `(8,)`.
+- **mc_rf_converged**: False if the fit ran to the maximum number of iterations, shape `(8,)`.
+- **mc_rf_opt_res**: Final optimality residual of the FISTA fit (largest violation of the lasso optimality conditions,
+  relative to `alpha_max`; the fit stops once it is small), shape `(8,)`. NaN for Adam.
 
 ## Selected penalty
 

@@ -74,7 +74,7 @@ DF_T, DF_S = 15, 14
 # Lasso path (penalties relative to alpha_max) and solver settings (FISTA, see glm.fit_fista)
 LASSO_ALPHAS = np.logspace(-4, 0, 8)
 SOLVER = 'fista'
-FIT_KW = dict(num_iters=3000, rtol=1e-5, tolerance=5, eps_mean=1e-3)
+FIT_KW = dict(num_iters=5000, gtol=1e-4, tolerance=3, eps_mean=1e-3)  # TODO: settle with bench_mc_rf_solvers.py
 # Non-zero weights: exact for FISTA; for Adam (no exact zeros) |w| > NONZERO_THRESH * max|w|
 NONZERO_THRESH = 1e-2
 # sRF fit: DoG per channel, soft prior pulling the centers towards the window center (= field center), soft penalty on
@@ -164,6 +164,7 @@ def evaluate_roi(response, weights, intercepts, y_std, infos, feats, bases):
         mc_rf_mse_repeats=mse, mc_rf_frac_nonzero=frac_nonzero,
         mc_rf_n_iter=np.array([d['n_iter'] for d in infos]),
         mc_rf_converged=np.array([d['stop'] != 'maxiter_stop' for d in infos]),
+        mc_rf_opt_res=np.array([d.get('res', np.nan) for d in infos]),
         mc_rf_best_alpha_idx=best, mc_rf_best_alpha=LASSO_ALPHAS[best] if best >= 0 else np.nan,
         mc_rf_best_cc=cc_mean[best] if best >= 0 else np.nan, mc_rf_best_mse=mse[best].mean() if best >= 0 else np.nan,
         mc_rf_trf_t0=float(rf_time[0]), mc_rf_trf_dt=DT_FRAME, mc_rf_pixel_size_um=PIXEL_SIZE_UM,

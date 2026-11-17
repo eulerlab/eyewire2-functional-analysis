@@ -26,19 +26,16 @@ dependencies = [
     "tables>=3.10.2",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
-    "pywarper>=0.2.5",
-    "skeliner>=0.2.5",
+    "pywarper>=0.2.8",
+    "skeliner>=0.2.6",
     "cell-mosaics>=0.1.0",
     "gcl-classifier>=0.1.0",
+    "rfest>=2.2.0",
 ]
-
-[project.optional-dependencies]
-# Mouse-cam receptive fields (receptive_fields_glm.py, scripts/preprocessing/mc_rfs). For a GPU on Linux, install
-# jax with CUDA support instead, e.g. `pip install "jax[cuda13]"`.
-rf = [
-    "jax>=0.6",
+gpu = [
+    "jax[cuda13]; sys_platform == 'linux'",
 ]
 
 [tool.setuptools.packages.find]
@@ -47,13 +44,3 @@ include = ["eyewire2_functional_analysis*"]
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
-
-[tool.uv.sources]
-# On Windows, the PyPI pywarper release can crash: when the optional scikit-sparse
-# speedup isn't installed, it prints a non-ASCII fallback warning that a default
-# (cp1252) Windows console can't encode. The "windows-fix" branch has that fixed, so
-# use it there; everywhere else stays on the normal PyPI release.
-pywarper = [
-    { git = "https://github.com/berenslab/pywarper", branch = "windows-fix", marker = "sys_platform == 'win32'" },
-]
-

@@ -74,7 +74,9 @@ DF_T, DF_S = 15, 14
 # Lasso path (penalties relative to alpha_max) and solver settings (FISTA, see glm.fit_fista)
 LASSO_ALPHAS = np.logspace(-3, 0, 7)  # weaker penalties: rarely best, chance-level test cc, slow to converge
 SOLVER = 'fista'
-FIT_KW = dict(num_iters=5000, gtol=1e-4, tolerance=3, eps_mean=1e-3)  # TODO: settle with bench_mc_rf_solvers.py
+# bench_mc_rf_solvers.py (GCL0): gtol is never reached (fits stop at num_iters), 2000 iters too few, Jacobi
+# preconditioning best agreement with a converged reference on the selected penalty
+FIT_KW = dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3)
 # Non-zero weights: exact for FISTA; for Adam (no exact zeros) |w| > NONZERO_THRESH * max|w|
 NONZERO_THRESH = 1e-2
 # sRF fit: DoG per channel, soft prior pulling the centers towards the window center (= field center), soft penalty on

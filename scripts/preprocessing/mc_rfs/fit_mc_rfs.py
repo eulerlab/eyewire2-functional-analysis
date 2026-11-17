@@ -75,7 +75,8 @@ DF_T, DF_S = 15, 14
 LASSO_ALPHAS = np.logspace(-4, 0, 8)
 SOLVER = 'fista'
 FIT_KW = dict(num_iters=3000, rtol=1e-5, tolerance=5, eps_mean=1e-3)
-NONZERO_THRESH = 1e-2  # a weight counts as non-zero if |w| > NONZERO_THRESH * max|w|
+# Non-zero weights: exact for FISTA; for Adam (no exact zeros) |w| > NONZERO_THRESH * max|w|
+NONZERO_THRESH = 1e-2
 # sRF fit: DoG per channel, soft prior pulling the centers towards the window center (= field center), soft penalty on
 # the green-UV center distance relative to the center sizes
 SRF_FIT_KIND = 'dog'
@@ -147,7 +148,10 @@ def evaluate_roi(response, weights, intercepts, y_std, infos, feats, bases):
     pred = pred[:, n_eval_skip:].transpose(2, 0, 1)  # (n_a, 3, n_t)
     cc = np.stack([colwise_cc(p.T, resp.T) for p in pred])  # (n_a, 3), NaN if the prediction is constant
     mse = np.mean((pred - resp[None]) ** 2, axis=2)  # (n_a, 3)
-    frac_nonzero = np.mean(np.abs(weights) > NONZERO_THRESH * np.abs(weights).max(axis=1, keepdims=True), axis=1)
+    if SOLVER == 'fista':  # exact zeros
+        frac_nonzero = np.mean(weights != 0, axis=1)
+    else:  # Adam only shrinks weights towards zero
+        frac_nonzero = np.mean(np.abs(weights) > NONZERO_THRESH * np.abs(weights).max(axis=1, keepdims=True), axis=1)
 
     cc_mean = np.array([np.nanmean(c) if np.any(np.isfinite(c)) else np.nan for c in cc])  # over repeats
     best = int(np.nanargmax(cc_mean)) if np.any(np.isfinite(cc_mean)) else -1

@@ -35,7 +35,8 @@ Produced by `scripts/preprocessing/mc_rfs/fit_mc_rfs.py` in eyewire2-functional-
 - **mc_rf_mse**: Test MSE, averaged over the 3 repeats, shape `(8,)`. In the raw units of the response, so it is not
   comparable across ROIs.
 - **mc_rf_cc_repeats**, **mc_rf_mse_repeats**: Same per repeat, shape `(8, 3)`.
-- **mc_rf_frac_nonzero**: Fraction of basis weights with `|w| > 0.01 max|w|`, shape `(8,)`.
+- **mc_rf_frac_nonzero**: Fraction of basis weights that are not exactly zero, shape `(8,)`. (With the Adam solver,
+  which gives no exact zeros, the fraction with `|w| > 0.01 max|w|`.)
 - **mc_rf_n_iter**: Number of FISTA iterations, shape `(8,)`.
 - **mc_rf_converged**: False if the fit ran to the maximum of 3000 iterations, shape `(8,)`.
 

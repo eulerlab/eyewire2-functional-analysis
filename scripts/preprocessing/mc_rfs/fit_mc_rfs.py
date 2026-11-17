@@ -69,8 +69,8 @@ TRAIN_BLOCKS = ('train1', 'train2')
 TEST_BLOCKS = ('test1', 'test2', 'test3')
 DF_T, DF_S = 15, 14
 # Lasso path (penalties relative to alpha_max) and Adam settings
-LASSO_ALPHAS = np.logspace(-3, -1, 7)
-FIT_KW = dict(num_iters=3000, min_iters=300, atol=1e-6, tolerance=20, step_size=3e-3, step_size_finetune=1e-3,
+LASSO_ALPHAS = np.logspace(-4, 0, 8)
+FIT_KW = dict(num_iters=3000, min_iters=300, atol=1e-6, tolerance=20, step_size=1e-4, step_size_finetune=1e-3,
               eps_mean=1e-3)
 NONZERO_THRESH = 1e-2  # a weight counts as non-zero if |w| > NONZERO_THRESH * max|w|
 # sRF fit: DoG per channel, soft prior pulling the centers towards the window center (= field center), soft penalty on

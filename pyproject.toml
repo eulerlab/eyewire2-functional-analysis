@@ -32,7 +32,6 @@ dev = [
     "skeliner>=0.2.6",
     "cell-mosaics>=0.1.0",
     "gcl-classifier>=0.1.0",
-    "rfest>=2.2.0",
 ]
 gpu = [
     "jax[cuda13]; sys_platform == 'linux'",

@@ -3,9 +3,9 @@
 Per ROI, a GLM ``y ~ relu(X w + b)`` on the separable B-spline basis (t x y x x x channel) of the MC movie is fitted with
 a group-lasso penalty (the green and UV weights of each spatio-temporal basis function form one group, so the penalty
 does not favor one channel; a plain lasso zeroes the weaker of the correlated channels, usually green) with FISTA for
-every penalty of ``LASSO_ALPHAS`` (relative to the smallest penalty giving an all-zero RF, large to
-small, warm-started; ``receptive_fields_glm.fit_lasso_path``, a trimmed, dependency-free version of the RFEst GLM
-(https://github.com/berenslab/RFEst) as extended in djimaging). All ROIs of a field are fitted jointly (up to
+every penalty of ``ALPHAS`` (relative to the smallest penalty giving an all-zero RF, large to small, warm-started;
+``receptive_fields_glm.fit_group_lasso_path``, based on the GLM of RFEst (https://github.com/berenslab/RFEst) as
+extended in djimaging). All ROIs of a field are fitted jointly (up to
 ``--batch-size``), which is much faster on a GPU than one by one and gives the same fits up to floating point noise:
 
 - **Response**: positive gradient of ``mc_pp_trace`` at the movie frame times, divided by its train std for the fit.
@@ -24,12 +24,8 @@ Usage (one job per field, then merge)::
     python fit_mc_rfs.py --field GCL0        # fit (results cached per ROI, re-running resumes)
     python fit_mc_rfs.py --merge             # write the parquet once all fields are done
 
-Other solvers (with both commands; cached separately, the parquet gets a suffix): ``--solver lasso`` (plain lasso,
-FISTA; ``_lasso``), ``--solver adam`` (lasso, Adam as in RFEst, not converged to the lasso optimum; ``_adam``),
-``--solver enet`` (elastic net, FISTA, ``--l1-ratio``; ``_enet{l1_ratio}``). ``compare_mc_rf_solvers.py`` plots the
-solvers side by side.
-
-Without ``--field`` and ``--merge``, all fields are fitted and then merged.
+``plot_mc_rfs.py`` plots example RFs and summaries for QC. Without ``--field`` and ``--merge``, all fields are fitted
+and then merged.
 """
 import argparse
 import os
@@ -42,12 +38,6 @@ parser.add_argument('--out-dir', default=None, help='Output folder (default: <re
 parser.add_argument('--n-cpus', type=int, default=None, help='Limit the number of CPU threads.')
 parser.add_argument('--batch-size', type=int, default=128,
                     help='Max. number of ROIs of a field fitted jointly (lower it if the GPU runs out of memory).')
-parser.add_argument('--solver', choices=('group', 'lasso', 'adam', 'enet'), default='group',
-                    help='group: group lasso over the channels, FISTA (default); lasso: lasso, FISTA; adam: lasso, '
-                         'Adam (RFEst); enet: elastic net, FISTA. Results are cached separately, the parquet of the '
-                         'non-default solvers gets the suffix _lasso / _adam / _enet{l1_ratio}.')
-parser.add_argument('--l1-ratio', type=float, default=0.5,
-                    help='--solver enet: share of the L1 penalty (0 < l1_ratio < 1, scikit-learn convention).')
 args = parser.parse_args()
 
 if args.n_cpus:
@@ -84,41 +74,15 @@ DUR_PAST_S, DUR_FUTURE_S = 1.2, 0.3
 TRAIN_BLOCKS = ('train1', 'train2')
 TEST_BLOCKS = ('test1', 'test2', 'test3')
 DF_T, DF_S = 15, 14
-# Lasso path (penalties relative to alpha_max) and solver settings, per --solver
-SOLVER_SETTINGS = dict(
-    # Lasso, FISTA (glm.fit_fista). Weaker penalties: rarely best, chance-level test cc, slow to converge.
-    # bench_mc_rf_solvers.py (GCL0): gtol is never reached (fits stop at num_iters), 2000 iters too few, Jacobi
-    # preconditioning best agreement with a converged reference on the selected penalty
-    lasso=(np.logspace(-3, 0, 7), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3)),
-    # Adam (glm.fit_adam, as RFEst): the last Adam settings before the switch to FISTA (eb4d16c). Not converged to the
-    # lasso optimum, i.e. additionally regularized by early stopping.
-    adam=(np.logspace(-4, 0, 8), dict(num_iters=3000, min_iters=300, atol=1e-6, tolerance=20, step_size=1e-4,
-                                      step_size_finetune=1e-3, eps_mean=1e-3)),
-    # Elastic net (FISTA as above, glm.fit_lasso_path with l1_ratio): at the same alpha, the same L1 penalty as the
-    # lasso plus an L2 penalty ((1 - l1_ratio) / l1_ratio times the L1 one), which keeps weak but consistent weights
-    # (e.g. the weaker channel) that the lasso zeroes. One decade lower penalties than the lasso, since the L2 term
-    # regularizes in addition and makes the weak penalties converge faster.
-    enet=(np.logspace(-4, 0, 9), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3,
-                                      l1_ratio=args.l1_ratio)),
-    # Group lasso, the default (FISTA as above, glm.fit_lasso_path with group_size): groups = the channels of one
-    # spatio-temporal basis function (channel is the last feature axis of rf.compute_basis_features), so green and UV
-    # are kept or zeroed together. The lasso picks the stronger of the correlated channels (UV) and zeroes green. GCL0:
-    # same test cc as the lasso (median -0.001), green/UV weight ratio at the selected penalty never ~0 and half as
-    # sensitive to the penalty.
-    group=(np.logspace(-3, 0, 7), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3,
-                                       group_size=len(mc.MC_CHANNELS))),
-)
-SOLVER = args.solver
-if SOLVER == 'enet' and not 0. < args.l1_ratio < 1.:
-    parser.error(f'--l1-ratio must be in (0, 1) for the elastic net, got {args.l1_ratio}')
-GLM_SOLVER = 'adam' if SOLVER == 'adam' else 'fista'
-LASSO_ALPHAS, FIT_KW = SOLVER_SETTINGS[SOLVER]
-# name in the settings hash: the lasso was called 'fista' when it was the default, keep its cache
-SOLVER_KEY = {'lasso': 'fista'}.get(SOLVER, SOLVER)
-OUT_NAME = OUT_NAME + {'group': '', 'lasso': '_lasso', 'adam': '_adam', 'enet': f'_enet{args.l1_ratio:g}'}[SOLVER]
-# Non-zero weights: exact for FISTA (lasso, elastic net and group lasso); for Adam (no exact zeros)
-# |w| > NONZERO_THRESH * max|w|
-NONZERO_THRESH = 1e-2
+# Group-lasso path: penalties relative to alpha_max, large to small; groups = the channels of one spatio-temporal basis
+# function (channel is the last feature axis of rf.compute_basis_features), so green and UV are kept or zeroed together.
+# Compared on GCL0 with a plain lasso (FISTA), the lasso with Adam (as RFEst) and elastic nets: same test cc as the
+# lasso, but the lasso zeroes the weaker of the correlated channels (green) and its green/UV ratio depends strongly on
+# the penalty. FISTA (Jacobi preconditioning, 5000 iterations; gtol is rarely reached) converges to a lower cost than
+# Adam; weaker penalties than 1e-3 are rarely best, have chance-level test cc and are slow to converge.
+ALPHAS = np.logspace(-3, 0, 7)
+FIT_KW = dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3,
+              group_size=len(mc.MC_CHANNELS))
 # sRF fit: DoG per channel, soft prior pulling the centers towards the window center (= field center), soft penalty on
 # the green-UV center distance relative to the center sizes
 SRF_FIT_KIND = 'dog'
@@ -127,9 +91,11 @@ CENTER_PRIOR_WEIGHT, COUPLING_WEIGHT = 0.05, 0.05
 DOG_PARAMS = ('amp', 'polarity', 'x0', 'y0', 'sx', 'sy', 'theta', 'r2', 'amp_s', 'sx_s', 'sy_s', 'surround_ratio',
               'surround_rel_amp')
 
+# 'group' and 1e-2 (the former solver name and non-zero threshold of the Adam solver) keep the key, i.e. the cache, of
+# the fits made before the other solvers were removed
 SETTINGS_KEY = hashlib.md5(repr((
-    BIN_XY, DUR_PAST_S, DUR_FUTURE_S, TRAIN_BLOCKS, TEST_BLOCKS, DF_T, DF_S, list(LASSO_ALPHAS), SOLVER_KEY, sorted(FIT_KW.items()),
-    NONZERO_THRESH, SRF_FIT_KIND, CENTER_PRIOR_SD_UM, CENTER_PRIOR_WEIGHT, COUPLING_WEIGHT, 'v2')).encode()).hexdigest()[:8]
+    BIN_XY, DUR_PAST_S, DUR_FUTURE_S, TRAIN_BLOCKS, TEST_BLOCKS, DF_T, DF_S, list(ALPHAS), 'group',
+    sorted(FIT_KW.items()), 1e-2, SRF_FIT_KIND, CENTER_PRIOR_SD_UM, CENTER_PRIOR_WEIGHT, COUPLING_WEIGHT, 'v2')).encode()).hexdigest()[:8]
 
 blocks = mc.get_frame_blocks()
 train_idxs = np.where(np.isin(blocks, TRAIN_BLOCKS))[0]
@@ -171,12 +137,13 @@ def describe_strf(strf):
 
 
 def fit_rois(rows, x_train, feats, bases):
-    """Lasso paths of several ROIs of one field (fitted jointly on the GPU, every fit is the same as fitting the ROIs one
-    by one), their test scores and the RF of the best penalty. Returns a list of (row dict, cache extras) per ROI."""
+    """Group-lasso paths of several ROIs of one field (fitted jointly on the GPU, every fit is the same as fitting the
+    ROIs one by one), their test scores and the RF of the best penalty. Returns a list of (row dict, cache extras) per
+    ROI."""
     responses = [get_response(row) for row in rows]
     y_train = np.stack([r[train_idxs] for r in responses], axis=1).astype(np.float64)  # (n_train, n_rois)
     y_std = y_train.std(axis=0)
-    weights, intercepts, infos = glm.fit_lasso_path(x_train, y_train / y_std, LASSO_ALPHAS, solver=GLM_SOLVER, **FIT_KW)
+    weights, intercepts, infos = glm.fit_group_lasso_path(x_train, y_train / y_std, ALPHAS, **FIT_KW)
     return [evaluate_roi(responses[r], weights[r], intercepts[r], y_std[r], infos[r], feats, bases)
             for r in range(len(rows))]
 
@@ -190,10 +157,7 @@ def evaluate_roi(response, weights, intercepts, y_std, infos, feats, bases):
     pred = pred[:, n_eval_skip:].transpose(2, 0, 1)  # (n_a, 3, n_t)
     cc = np.stack([colwise_cc(p.T, resp.T) for p in pred])  # (n_a, 3), NaN if the prediction is constant
     mse = np.mean((pred - resp[None]) ** 2, axis=2)  # (n_a, 3)
-    if GLM_SOLVER == 'fista':  # exact zeros
-        frac_nonzero = np.mean(weights != 0, axis=1)
-    else:  # Adam only shrinks weights towards zero
-        frac_nonzero = np.mean(np.abs(weights) > NONZERO_THRESH * np.abs(weights).max(axis=1, keepdims=True), axis=1)
+    frac_nonzero = np.mean(weights != 0, axis=1)  # FISTA gives exact zeros
 
     cc_mean = np.array([np.nanmean(c) if np.any(np.isfinite(c)) else np.nan for c in cc])  # over repeats
     best = int(np.nanargmax(cc_mean)) if np.any(np.isfinite(cc_mean)) else -1
@@ -202,12 +166,12 @@ def evaluate_roi(response, weights, intercepts, y_std, infos, feats, bases):
         strf = np.full_like(strf, np.nan)
 
     out = dict(
-        mc_rf_alphas=LASSO_ALPHAS.copy(), mc_rf_cc=cc_mean, mc_rf_mse=mse.mean(axis=1), mc_rf_cc_repeats=cc,
+        mc_rf_alphas=ALPHAS.copy(), mc_rf_cc=cc_mean, mc_rf_mse=mse.mean(axis=1), mc_rf_cc_repeats=cc,
         mc_rf_mse_repeats=mse, mc_rf_frac_nonzero=frac_nonzero,
         mc_rf_n_iter=np.array([d['n_iter'] for d in infos]),
         mc_rf_converged=np.array([d['stop'] != 'maxiter_stop' for d in infos]),
         mc_rf_opt_res=np.array([d.get('res', np.nan) for d in infos]),
-        mc_rf_best_alpha_idx=best, mc_rf_best_alpha=LASSO_ALPHAS[best] if best >= 0 else np.nan,
+        mc_rf_best_alpha_idx=best, mc_rf_best_alpha=ALPHAS[best] if best >= 0 else np.nan,
         mc_rf_best_cc=cc_mean[best] if best >= 0 else np.nan, mc_rf_best_mse=mse[best].mean() if best >= 0 else np.nan,
         mc_rf_trf_t0=float(rf_time[0]), mc_rf_trf_dt=DT_FRAME, mc_rf_pixel_size_um=PIXEL_SIZE_UM,
         **describe_strf(strf))

@@ -18,7 +18,7 @@
 # Plot the pre-estimated mouse-cam receptive field (RF) of one cell on top of its EM skeleton. The RFs are loaded from
 # `df_eyewire2_roi_level_mc_rf.parquet` (see `scripts/preprocessing/mc_rfs/fit_mc_rfs.py` and the column docs in
 # `df_eyewire2_roi_level_mc_rf.md`): per ROI, the spatial RF (sRF) and temporal RF (tRF) of the green and UV channel of a
-# lasso GLM, and a difference-of-Gaussians (DoG) fit of the sRFs.
+# group-lasso GLM, and a difference-of-Gaussians (DoG) fit of the sRFs.
 #
 # The skeleton is rotated into the retinal frame with the fitted 2p <-> EM registration (see
 # `scripts/preprocessing/em-2p-mapping.py`) and placed with its soma at the ROI position. The sRF is placed with the

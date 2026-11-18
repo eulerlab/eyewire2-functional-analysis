@@ -4,7 +4,9 @@ in JAX.
 Model: ``y ~ relu(X w + b)`` with ``X`` a pre-computed design matrix (e.g. the stimulus projected onto a separable
 B-spline basis, see ``receptive_fields.compute_basis_features``). Cost: ``mean((y - y_pred) ** 2) + beta * ||w||_1``
 (lasso) or, with ``l1_ratio < 1`` (elastic net, FISTA only), ``mean((y - y_pred) ** 2) + beta * (l1_ratio * ||w||_1 +
-(1 - l1_ratio) / 2 * ||w||_2^2)`` (the scikit-learn parametrization).
+(1 - l1_ratio) / 2 * ||w||_2^2)`` (the scikit-learn parametrization). With ``group_size > 1`` (group lasso, FISTA
+only), ``||w||_1`` is replaced by ``sum_g ||w_g||_2`` over groups of ``group_size`` consecutive features (e.g. the
+channels of one spatio-temporal basis function), so a group is zero or non-zero as a whole.
 
 The default solver is FISTA (``fit_fista``): proximal gradient steps (soft-thresholding, so weights are exactly zero
 where the penalty wins; for the elastic net followed by the exact shrinkage of the L2 term) with Nesterov momentum and
@@ -59,12 +61,22 @@ def _forwardpass(p, x):
     return jnp.where(out > 0., out, 0.).astype(_DTYPE)
 
 
-def _costs(p, x, y, beta, beta_l2=None):
+def _group_norm(w, group_size):
+    """Euclidean norm of each group of ``group_size`` consecutive rows of ``w`` ``(n_features, n_responses)``,
+    repeated to the shape of ``w``; ``|w|`` for ``group_size = 1``."""
+    if group_size == 1:
+        return jnp.abs(w)
+    norms = jnp.sqrt(jnp.sum(w.reshape(-1, group_size, w.shape[-1]) ** 2, axis=1))
+    return jnp.repeat(norms, group_size, axis=0)
+
+
+def _costs(p, x, y, beta, beta_l2=None, group_size=1):
     """Per-response MSE plus L1 penalty, as ``rfest.loss.loss_mse(y, r) + rfest.loss.loss_penalty(w, alpha=1., beta)``,
-    plus ``beta_l2 / 2 * ||w||_2^2`` if given (elastic net, with ``beta`` the L1 part).
+    plus ``beta_l2 / 2 * ||w||_2^2`` if given (elastic net, with ``beta`` the L1 part). With ``group_size > 1``, the
+    L1 norm is replaced by the sum of the group norms (group lasso).
     Returns the summed cost (for the gradient) and the per-response costs."""
     mse = jnp.mean((y - _forwardpass(p, x)) ** 2, axis=0)
-    l1 = jnp.sum(jnp.abs(p['stimulus']), axis=0)
+    l1 = jnp.sum(_group_norm(p['stimulus'], group_size), axis=0) / group_size  # each group norm repeated group_size x
     costs = mse + beta * l1
     if beta_l2 is not None:
         costs = costs + 0.5 * beta_l2 * jnp.sum(p['stimulus'] ** 2, axis=0)
@@ -149,12 +161,13 @@ def fit_adam(x, y, p0, beta, num_iters=3000, step_size=1e-3, tolerance=20, atol=
     return s['best_params'], infos
 
 
-def compute_beta_max(x, y):
+def compute_beta_max(x, y, group_size=1):
     """``beta_max = 2 max|X'(y - mean(y))| / n`` per response: the smallest penalty that gives all-zero weights for the
-    linear model (only approximate with the ReLU). ``y``: ``(n_samples, n_responses)``."""
+    linear model (only approximate with the ReLU). ``y``: ``(n_samples, n_responses)``. For the group lasso
+    (``group_size > 1``) the max is over the group norms of ``X'(y - mean(y))``."""
     x = to_device(x)
     xty = (x - x.mean(axis=0)).T @ (y - y.mean(axis=0))
-    return 2 * np.asarray(jnp.max(jnp.abs(xty), axis=0), np.float64) / x.shape[0]
+    return 2 * np.asarray(jnp.max(_group_norm(xty, group_size), axis=0), np.float64) / x.shape[0]
 
 
 def fista_steps(x, precondition='none', step_scale=1., n_iter=100, margin=1.05, seed=0):
@@ -190,22 +203,32 @@ def fista_steps(x, precondition='none', step_scale=1., n_iter=100, margin=1.05, 
     return np.asarray(step_scale / (c * d_w), np.float64), step_scale / c
 
 
-def _prox(vw, beta, beta_l2, step_w):
+def _prox(vw, beta, beta_l2, step_w, group_size=1):
     """Proximal step of ``beta ||w||_1 + beta_l2 / 2 ||w||_2^2``: soft-thresholding, then shrinkage by ``1 + step
-    beta_l2`` (exact for the elastic net, so the step sizes of the MSE alone still apply)."""
-    return jnp.sign(vw) * jnp.maximum(jnp.abs(vw) - step_w * beta, 0.) / (1. + step_w * beta_l2)
+    beta_l2`` (exact for the elastic net, so the step sizes of the MSE alone still apply). With ``group_size > 1``,
+    block soft-thresholding of the group norms (``step_w`` must be the same within each group)."""
+    if group_size == 1:
+        return jnp.sign(vw) * jnp.maximum(jnp.abs(vw) - step_w * beta, 0.) / (1. + step_w * beta_l2)
+    nv = _group_norm(vw, group_size)
+    shrink = jnp.maximum(1. - step_w * beta / jnp.where(nv > 0., nv, 1.), 0.)
+    return vw * shrink / (1. + step_w * beta_l2)
 
 
-def _gradient_mapping(w, vw, gw, beta, beta_l2, step_w):
+def _gradient_mapping(w, vw, gw, beta, beta_l2, step_w, group_size=1):
     """``(w - prox(vw)) / step`` with ``vw = w - step gw``, computed from the gradient (``(gw + beta_l2 w + beta
     sign(vw)) / (1 + step beta_l2)`` where the prox keeps the weight, ``w / step`` where it zeroes it) instead of the
-    difference, which is 0 once the update is below float32 resolution of ``w`` although the gradient is not."""
-    return jnp.where(jnp.abs(vw) > step_w * beta,
-                     (gw + beta_l2 * w + beta * jnp.sign(vw)) / (1. + step_w * beta_l2), w / step_w)
+    difference, which is 0 once the update is below float32 resolution of ``w`` although the gradient is not. For the
+    group lasso, ``sign(vw)`` and ``|vw|`` are replaced by ``vw / ||vw_g||`` and ``||vw_g||``."""
+    if group_size == 1:
+        return jnp.where(jnp.abs(vw) > step_w * beta,
+                         (gw + beta_l2 * w + beta * jnp.sign(vw)) / (1. + step_w * beta_l2), w / step_w)
+    nv = _group_norm(vw, group_size)
+    unit = vw / jnp.where(nv > 0., nv, 1.)
+    return jnp.where(nv > step_w * beta, (gw + beta_l2 * w + beta * unit) / (1. + step_w * beta_l2), w / step_w)
 
 
 @functools.lru_cache(maxsize=None)
-def _get_fista_chunk_runner(num_iters, gtol, tolerance, min_iters):
+def _get_fista_chunk_runner(num_iters, gtol, tolerance, min_iters, group_size=1):
     """`run_chunk` performs `_CHUNK_SIZE` FISTA steps (with adaptive restart) and updates the per-response stopping
     state. Compiled once per settings and input shapes."""
 
@@ -219,10 +242,10 @@ def _get_fista_chunk_runner(num_iters, gtol, tolerance, min_iters):
         gw, gb = (2. / n) * (x.T @ r), (2. / n) * r.sum(axis=0)
         # proximal step: soft-thresholding (and L2 shrinkage) of the weights, the intercept is not penalized
         vw = s['zw'] - step_w * gw
-        w = _prox(vw, beta, beta_l2, step_w)
+        w = _prox(vw, beta, beta_l2, step_w, group_size)
         b = s['zb'] - step_b * gb
         # gradient mapping G = (z - prox step) / step, in gradient units: zero iff z is optimal (KKT conditions)
-        g_map_w, g_map_b = _gradient_mapping(s['zw'], vw, gw, beta, beta_l2, step_w), gb
+        g_map_w, g_map_b = _gradient_mapping(s['zw'], vw, gw, beta, beta_l2, step_w, group_size), gb
         # adaptive restart (O'Donoghue & Candes 2015): drop the momentum if it points against the proximal step
         restart = (jnp.sum(g_map_w * (w - s['w']), axis=0) + g_map_b * (b - s['b'])) > 0.
         t = jnp.where(restart, 1., (1. + jnp.sqrt(1. + 4. * s['t'] ** 2)) / 2.)
@@ -247,8 +270,8 @@ def _get_fista_chunk_runner(num_iters, gtol, tolerance, min_iters):
     return run_chunk
 
 
-def fit_fista(x, y, w0, b0, beta, steps, g_scale, beta_l2=None, num_iters=5000, gtol=1e-4, tolerance=3,
-              min_iters=10):
+def fit_fista(x, y, w0, b0, beta, steps, g_scale, beta_l2=None, group_size=1, num_iters=5000, gtol=1e-4,
+              tolerance=3, min_iters=10):
     """Minimize the cost of each response with FISTA (accelerated proximal gradient with adaptive restart) from
     ``(w0, b0)``. Weights are exactly zero where the penalty wins.
 
@@ -266,12 +289,14 @@ def fit_fista(x, y, w0, b0, beta, steps, g_scale, beta_l2=None, num_iters=5000, 
         g_scale: Gradient scale per response ``(n_responses,)``, e.g. ``beta_max``.
         beta_l2: L2 penalty per response ``(n_responses,)`` (elastic net: cost term ``beta_l2 / 2 ||w||_2^2``), or None
             (lasso).
+        group_size: ``> 1``: group lasso over groups of ``group_size`` consecutive features (``beta`` penalizes the
+            group norms); ``steps[0]`` must then be the same within each group, see ``fit_lasso_path``.
 
     Returns:
         tuple: Weights, intercepts and a list of info dicts per response (``n_iter``, ``n_restart``, ``res`` = last
         relative optimality residual, ``cost`` = final train cost, ``stop`` = ``'train_stop'`` or ``'maxiter_stop'``).
     """
-    run_chunk = _get_fista_chunk_runner(num_iters, gtol, tolerance, min_iters)
+    run_chunk = _get_fista_chunk_runner(num_iters, gtol, tolerance, min_iters, group_size)
     l2 = beta_l2 is not None
     data = dict(x=x, y=jnp.asarray(y, _DTYPE), beta=jnp.asarray(beta, _DTYPE),
                 beta_l2=jnp.asarray(beta_l2 if l2 else np.zeros_like(np.asarray(beta)), _DTYPE),
@@ -289,21 +314,21 @@ def fit_fista(x, y, w0, b0, beta, steps, g_scale, beta_l2=None, num_iters=5000, 
             break
 
     p = dict(stimulus=s['w'], intercept=dict(stimulus=jnp.zeros_like(s['b']), **{'global': s['b']}))
-    costs = np.asarray(_costs(p, x, data['y'], data['beta'], data['beta_l2'] if l2 else None)[1])
+    costs = np.asarray(_costs(p, x, data['y'], data['beta'], data['beta_l2'] if l2 else None, group_size)[1])
     active, n_iter, n_restart, res = (np.asarray(s[k]) for k in ('active', 'n_iter', 'n_restart', 'res'))
     infos = [dict(n_iter=int(n_iter[r]), n_restart=int(n_restart[r]), res=float(res[r]), cost=float(costs[r]),
                   stop='maxiter_stop' if active[r] else 'train_stop') for r in range(n_resp)]
     return s['w'], s['b'], infos
 
 
-def optimality_residual(x, y, weights, intercepts, beta, g_scale, steps, beta_l2=None):
+def optimality_residual(x, y, weights, intercepts, beta, g_scale, steps, beta_l2=None, group_size=1):
     """Relative optimality residual of any solution (e.g. also of Adam): the largest absolute entry of the gradient
     mapping ``(w - prox(w - step g)) / step`` at the solution (as the FISTA stopping criterion, but at the solution
     instead of the extrapolated point), divided by ``g_scale``. Zero iff the lasso optimality conditions hold; unlike
     the plain violation of these conditions, it is continuous in ``w`` (a weight of 1e-12 that should be zero only
     counts as 1e-12 / step). Weights ``(n_features, n_models)``, intercepts, ``beta`` and ``g_scale``
     ``(n_models,)``, ``y`` ``(n_samples, n_models)``, ``steps`` from ``fista_steps`` (use the same for all solutions
-    that are compared). ``beta_l2``: L2 penalty for the elastic net, as in ``fit_fista``."""
+    that are compared). ``beta_l2``, ``group_size``: elastic net / group lasso, as in ``fit_fista``."""
     x = to_device(x)
     w, b = jnp.asarray(weights, _DTYPE), jnp.asarray(intercepts, _DTYPE)
     beta = jnp.asarray(beta, _DTYPE)
@@ -312,13 +337,13 @@ def optimality_residual(x, y, weights, intercepts, beta, g_scale, steps, beta_l2
     out = x @ w + b
     r = jnp.where(out > 0., out - jnp.asarray(y, _DTYPE), 0.)
     gw, gb = (2. / x.shape[0]) * (x.T @ r), (2. / x.shape[0]) * r.sum(axis=0)
-    g_map_w = _gradient_mapping(w, w - step_w * gw, gw, beta, beta_l2, step_w)
+    g_map_w = _gradient_mapping(w, w - step_w * gw, gw, beta, beta_l2, step_w, group_size)
     return np.asarray(jnp.maximum(jnp.max(jnp.abs(g_map_w), axis=0), jnp.abs(gb)) / jnp.asarray(g_scale, _DTYPE),
                       np.float64)
 
 
 def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e-3, step_size_finetune=1e-3,
-                   precondition='none', step_scale=1., l1_ratio=1., **kwargs):
+                   precondition='none', step_scale=1., l1_ratio=1., group_size=1, **kwargs):
     """Lasso (or elastic-net) GLM ``y ~ relu(X w + b)`` for all penalties ``alphas_rel`` (relative to ``beta_max``),
     large to small.
 
@@ -333,6 +358,11 @@ def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e
     ||w||_2^2``), so that ``alpha_rel = 1`` still gives all-zero weights (as ``alpha_max`` in scikit-learn's
     ``ElasticNet``).
 
+    With ``group_size > 1`` (FISTA only), the L1 norm is replaced by the sum of the norms of groups of ``group_size``
+    consecutive features (group lasso; combinable with ``l1_ratio``), and ``beta_max`` is the largest group norm of
+    the gradient at zero. Within each group, the FISTA step is the smallest step of the group (block soft-thresholding
+    needs one step per group; a smaller step is still a valid step).
+
     Two solvers minimize the same cost: ``'fista'`` (``fit_fista``, step sizes from ``fista_steps`` with
     ``precondition`` and ``step_scale``, residuals relative to ``beta_max``; gives exact zeros) and ``'adam'``
     (``fit_adam``, as RFEst; ``step_size`` for the first penalty, ``step_size_finetune`` for the warm-started ones).
@@ -344,6 +374,7 @@ def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e
         alphas_rel: Penalties relative to ``beta_max``.
         solver: ``'fista'`` or ``'adam'``.
         l1_ratio: Share of the L1 penalty, ``1`` = lasso, ``0 < l1_ratio < 1`` = elastic net (FISTA only).
+        group_size: ``1`` = lasso, ``> 1`` = group lasso over consecutive features (FISTA only).
         **kwargs: Passed to ``fit_fista`` or ``fit_adam``.
 
     Returns:
@@ -358,12 +389,16 @@ def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e
         raise ValueError(f'l1_ratio must be in (0, 1], got {l1_ratio}.')
     if l1_ratio < 1. and solver != 'fista':
         raise ValueError('The elastic net (l1_ratio < 1) is only implemented for FISTA.')
+    if group_size != 1 and solver != 'fista':
+        raise ValueError('The group lasso (group_size > 1) is only implemented for FISTA.')
+    if x.shape[1] % group_size:
+        raise ValueError(f'{x.shape[1]} features are not divisible into groups of {group_size}.')
     y = np.asarray(y)  # beta_max and the initial intercept are computed before the cast to float32 (as in the sweep)
     single = y.ndim == 1
     y = y.reshape(y.shape[0], -1)
     n, n_feat = x.shape
     n_resp = y.shape[1]
-    beta_max = compute_beta_max(x, y)
+    beta_max = compute_beta_max(x, y, group_size)
     p = dict(stimulus=jnp.zeros((n_feat, n_resp), _DTYPE),
              intercept=dict(stimulus=jnp.zeros(n_resp, _DTYPE),
                             **{'global': jnp.asarray(np.maximum(y.mean(axis=0), eps_mean), _DTYPE)}))
@@ -371,6 +406,8 @@ def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e
 
     if solver == 'fista':
         steps = fista_steps(x, precondition=precondition, step_scale=step_scale)
+        if group_size > 1:  # one step per group: the smallest
+            steps = (np.repeat(steps[0].reshape(-1, group_size).min(axis=1), group_size), steps[1])
         w, b = p['stimulus'], p['intercept']['global']
     elif solver != 'adam':
         raise ValueError(f'Unknown solver {solver!r}.')
@@ -383,7 +420,8 @@ def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e
         if solver == 'fista':
             # lasso: beta_l2 None, so the cost is computed exactly as before
             beta_l1, beta_l2 = (beta, None) if l1_ratio == 1. else (beta, (1. - l1_ratio) / l1_ratio * beta)
-            w, b, info = fit_fista(x, y, w, b, beta_l1, steps, beta_max, beta_l2=beta_l2, **kwargs)
+            w, b, info = fit_fista(x, y, w, b, beta_l1, steps, beta_max, beta_l2=beta_l2, group_size=group_size,
+                                   **kwargs)
             weights[:, a], intercepts[:, a] = np.asarray(w).T, np.asarray(b, float)
         else:
             p, info = fit_adam(x, y, p, beta, step_size=step_size if k == 0 else step_size_finetune, **kwargs)

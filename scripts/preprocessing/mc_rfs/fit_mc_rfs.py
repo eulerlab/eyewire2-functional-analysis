@@ -24,7 +24,9 @@ Usage (one job per field, then merge)::
 
 ``--solver adam`` (with both commands) fits with Adam instead (RFEst, not converged to the lasso optimum) and writes
 ``df_eyewire2_roi_level_mc_rf_adam.parquet``. ``--solver enet`` fits an elastic net (L1 + L2 penalty, FISTA,
-``--l1-ratio``, default 0.5) and writes ``df_eyewire2_roi_level_mc_rf_enet{l1_ratio}.parquet``.
+``--l1-ratio``, default 0.5) and writes ``df_eyewire2_roi_level_mc_rf_enet{l1_ratio}.parquet``. ``--solver group``
+fits a group lasso (FISTA) with the green and UV weights of each spatio-temporal basis function as one group, so the
+penalty does not favor one channel, and writes ``df_eyewire2_roi_level_mc_rf_group.parquet``.
 ``compare_mc_rf_solvers.py`` plots the solvers side by side.
 
 Without ``--field`` and ``--merge``, all fields are fitted and then merged.
@@ -40,9 +42,10 @@ parser.add_argument('--out-dir', default=None, help='Output folder (default: <re
 parser.add_argument('--n-cpus', type=int, default=None, help='Limit the number of CPU threads.')
 parser.add_argument('--batch-size', type=int, default=128,
                     help='Max. number of ROIs of a field fitted jointly (lower it if the GPU runs out of memory).')
-parser.add_argument('--solver', choices=('fista', 'adam', 'enet'), default='fista',
-                    help='fista: lasso, FISTA; adam: lasso, Adam (RFEst); enet: elastic net, FISTA. Results are cached '
-                         'separately, the parquet gets the suffix _adam / _enet{l1_ratio}.')
+parser.add_argument('--solver', choices=('fista', 'adam', 'enet', 'group'), default='fista',
+                    help='fista: lasso, FISTA; adam: lasso, Adam (RFEst); enet: elastic net, FISTA; group: group lasso '
+                         'over the channels, FISTA. Results are cached separately, the parquet gets the suffix _adam / '
+                         '_enet{l1_ratio} / _group.')
 parser.add_argument('--l1-ratio', type=float, default=0.5,
                     help='--solver enet: share of the L1 penalty (0 < l1_ratio < 1, scikit-learn convention).')
 args = parser.parse_args()
@@ -97,14 +100,20 @@ SOLVER_SETTINGS = dict(
     # regularizes in addition and makes the weak penalties converge faster.
     enet=(np.logspace(-4, 0, 9), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3,
                                       l1_ratio=args.l1_ratio)),
+    # Group lasso (FISTA as above, glm.fit_lasso_path with group_size): groups = the channels of one spatio-temporal
+    # basis function (channel is the last feature axis of rf.compute_basis_features), so green and UV are kept or
+    # zeroed together. The lasso picks the stronger of the correlated channels (UV) and zeroes green.
+    group=(np.logspace(-3, 0, 7), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3,
+                                       group_size=len(mc.MC_CHANNELS))),
 )
 SOLVER = args.solver
 if SOLVER == 'enet' and not 0. < args.l1_ratio < 1.:
     parser.error(f'--l1-ratio must be in (0, 1) for the elastic net, got {args.l1_ratio}')
 GLM_SOLVER = 'adam' if SOLVER == 'adam' else 'fista'
 LASSO_ALPHAS, FIT_KW = SOLVER_SETTINGS[SOLVER]
-OUT_NAME = OUT_NAME + {'fista': '', 'adam': '_adam', 'enet': f'_enet{args.l1_ratio:g}'}[SOLVER]
-# Non-zero weights: exact for FISTA (lasso and elastic net); for Adam (no exact zeros) |w| > NONZERO_THRESH * max|w|
+OUT_NAME = OUT_NAME + {'fista': '', 'adam': '_adam', 'enet': f'_enet{args.l1_ratio:g}', 'group': '_group'}[SOLVER]
+# Non-zero weights: exact for FISTA (lasso, elastic net and group lasso); for Adam (no exact zeros)
+# |w| > NONZERO_THRESH * max|w|
 NONZERO_THRESH = 1e-2
 # sRF fit: DoG per channel, soft prior pulling the centers towards the window center (= field center), soft penalty on
 # the green-UV center distance relative to the center sizes

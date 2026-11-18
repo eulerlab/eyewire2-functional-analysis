@@ -139,5 +139,5 @@ def add_scale_bar(ax, lim, size: float = 100., fontsize: float = 7, color='k') -
     w, h = lim[1] - lim[0], lim[3] - lim[2]
     x0, y0 = lim[0] + 0.06 * w, lim[2] + 0.06 * h
     ax.plot([x0, x0 + size], [y0, y0], c=color, lw=2, solid_capstyle='butt', zorder=6)
-    ax.text(x0 + size / 2, y0 + 0.02 * h, f'{size:.0f} µm', ha='center', va='bottom', fontsize=fontsize, color=color,
+    ax.text(x0 + size / 2, y0 + 0.035 * h, f'{size:.0f} µm', ha='center', va='bottom', fontsize=fontsize, color=color,
             zorder=6)

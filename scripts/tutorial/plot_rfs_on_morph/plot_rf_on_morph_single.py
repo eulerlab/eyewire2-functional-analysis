@@ -66,7 +66,7 @@ df = data_loader.add_skels(df=df, inplace=True)
 
 n_px = df.mc_rf_green_srf.iloc[0].shape[0]
 r2 = np.maximum(df.mc_rf_green_dog_r2, df.mc_rf_uv_dog_r2)
-center_inside = np.all([df[f'mc_rf_{ch}_dog_{xy}'].between(2, n_px - 3) for ch in mc.MC_CHANNELS for xy in 'xy'],
+center_inside = np.all([df[f'mc_rf_{ch}_dog_{xy}0'].between(2, n_px - 3) for ch in mc.MC_CHANNELS for xy in 'xy'],
                        axis=0)
 df = df[df.skel.notnull() & df.qfilt & (df.mc_rf_best_alpha_idx >= 0) & (r2 >= R2_MIN) & center_inside]
 df = df.sort_values('mc_rf_best_cc', ascending=False)
@@ -94,7 +94,7 @@ print(f"{row.field} ROI {row.roi_id}: {row['Cell Type']}, test cc {row.mc_rf_bes
 # - **tRF**: temporal RFs, scaled by the sRF peak so that the channels are comparable.
 
 # %%
-rad = max(plot_rf.cell_radius(skel), plot_rf.rf_radius(row))
+rad = min(plot_rf.rf_radius(row, margin=10.), 150.)  # RF size; skeleton and ellipses are cropped to it
 lim = (-rad, rad, -rad, rad)
 vabsmax = max(np.nanmax(np.abs(row[f'mc_rf_{ch}_srf'])) for ch in mc.MC_CHANNELS)
 

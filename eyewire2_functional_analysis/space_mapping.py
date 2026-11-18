@@ -4,7 +4,7 @@ These build on the low-level fitted-registration primitives in
 `eyewire2_functional_analysis.registration` (`map_coords`, `align_skel`), but
 operate on whole batches (grouped by field) or on a skeleton's absolute
 position rather than just its orientation -- shared by
-`scripts/preprocessing/em-2p-mapping.py` and
+`scripts/preprocessing/em_2p_registration/em-2p-mapping.py` and
 `scripts/tutorial/plot_retinal_outline/plot_retinal_outline.py`.
 """
 import numpy as np

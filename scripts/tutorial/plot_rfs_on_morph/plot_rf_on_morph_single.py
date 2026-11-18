@@ -21,7 +21,7 @@
 # group-lasso GLM, and a difference-of-Gaussians (DoG) fit of the sRFs.
 #
 # The skeleton is rotated into the retinal frame with the fitted 2p <-> EM registration (see
-# `scripts/preprocessing/em-2p-mapping.py`) and placed with its soma at the ROI position. The sRF is placed with the
+# `scripts/preprocessing/em_2p_registration/em-2p-mapping.py`) and placed with its soma at the ROI position. The sRF is placed with the
 # stimulus centered on the recording field. Right = nasal, top = dorsal.
 #
 # **Note:** the orientation of the mouse-cam movie in the retinal frame (`receptive_fields.movie_to_retina`) is an

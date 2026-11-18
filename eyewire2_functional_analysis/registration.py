@@ -3,7 +3,7 @@
 Fits (and persists) the similarity transform (rotation + isotropic scale,
 with a fixed mirror flip) that best maps 2p ROI coordinates onto EM soma
 coordinates, using the known EM-cell <-> 2p-ROI correspondences in the EM-2p
-mapping table -- see scripts/preprocessing/em-2p-mapping.py, which fits and
+mapping table -- see scripts/preprocessing/em_2p_registration/em-2p-mapping.py, which fits and
 saves the parameters this module loads.
 
 The fit is bidirectional ('2p_to_em' and 'em_to_2p' are fit independently by

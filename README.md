@@ -14,7 +14,7 @@ The following files are included:
 - tutorial scripts to facilitate data exploration [scripts/tutorial/*.py](scripts/tutorial/)
 - an interactive EM ↔ function explorer tool, with cell-, timeline-, and cell-type-level views [scripts/tools/interactive_explorer/](scripts/tools/interactive_explorer/)
 - analysis scripts [scripts/analysis/*.py](scripts/analysis/)
-- preprocessing scripts, e.g. for the 2P-to-EM coordinate registration [scripts/preprocessing/*.py](scripts/preprocessing/)
+- preprocessing scripts, e.g. for the 2P-to-EM coordinate registration [scripts/preprocessing/em_2p_registration/](scripts/preprocessing/em_2p_registration/)
 - spreadsheet data that are needed to map 2p to EM data (proofread cell main list, 2P-to-EM ROI mapping), downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/spreadsheets) into the shared `eyewire2-data/spreadsheets/` folder (see [Downloading the data](#downloading-the-data) below)
 - pre-processed calcium traces from recordings over five recording fields, stored as parquet files and downloadable from [Hugging Face](https://huggingface.co/datasets/eulerlab/eyewire2-data/tree/main/data-2p) into `eyewire2-data/data-2p/`
 
@@ -97,7 +97,7 @@ In addition to `data/data-2p/`, this tool needs the EM skeletons (`data/swc/`) a
 
 ### 2P ↔ EM coordinate registration
 
-[scripts/preprocessing/em-2p-mapping.py](scripts/preprocessing/em-2p-mapping.py) fits the rotation + isotropic scale (a global fit, plus a per-field refinement) that maps 2P ROI coordinates onto EM soma coordinates, using the known EM-cell ↔ 2P-ROI correspondences in the EM-2P mapping spreadsheet — fit independently in both directions (`2p_to_em` and `em_to_2p`), rather than guessing an angle or algebraically inverting one fit to get the other.
+[scripts/preprocessing/em_2p_registration/em-2p-mapping.py](scripts/preprocessing/em_2p_registration/em-2p-mapping.py) fits the rotation + isotropic scale (a global fit, plus a per-field refinement) that maps 2P ROI coordinates onto EM soma coordinates, using the known EM-cell ↔ 2P-ROI correspondences in the EM-2P mapping spreadsheet — fit independently in both directions (`2p_to_em` and `em_to_2p`), rather than guessing an angle or algebraically inverting one fit to get the other.
 
 The fitted registration is what most other scripts/tools in this repo (`plot_DS_on_morph.py`, `plot_retinal_outline.py`, the interactive explorer, ...) load via `registration.load_registration(...)` to rotate EM skeletons into the 2P/retinal reference frame. It's already committed at `data/registration/em_2p_registration.yaml`, so you don't need to run this script yourself unless you want to re-fit it (e.g. after the spreadsheets are updated) or inspect the fit diagnostics, saved as figures under `scripts/preprocessing/figures/`. Set `REFIT = True` in the script to force a re-fit even if the file already exists.
 

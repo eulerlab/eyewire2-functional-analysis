@@ -154,7 +154,7 @@ def load_df_rois_morph(
     ROI-level data has no direct nucleus ID of its own, so the EM-2p mapping sheet is
     used to link each 2p ROI (``field``/``roi_id``) to the EM cell it corresponds to
     (``2p-Field``/``2p-ROI`` -> nucleus ID), the same correspondence used to fit the
-    2p<->EM coordinate registration in ``notebooks/preprocessing/em-2p-mapping.py``.
+    2p<->EM coordinate registration in ``scripts/preprocessing/em_2p_registration/em-2p-mapping.py``.
     That nucleus ID is then used to inner-join against the master list of proofread
     cells. ROIs with no nucleus ID in the mapping sheet (e.g. an overlay of two cells
     rather than a real single cell) are dropped.

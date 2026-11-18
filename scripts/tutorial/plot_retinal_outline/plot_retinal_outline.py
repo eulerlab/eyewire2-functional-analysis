@@ -181,7 +181,7 @@ plt.show()
 # Link with one segmentation layer per example cell (so its full EM
 # reconstruction, e.g. an axon, can be traced) plus, per 2p field, a point
 # annotation layer marking every matched EM cell's real "Nuc Coords" (as in
-# `scripts/preprocessing/em-2p-mapping.py`) -- so each example cell's true
+# `scripts/preprocessing/em_2p_registration/em-2p-mapping.py`) -- so each example cell's true
 # EM position can be checked against its own field's matched-cell point
 # cloud, and against the position it was placed at above.
 

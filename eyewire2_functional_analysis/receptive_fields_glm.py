@@ -1,11 +1,15 @@
-"""L1-penalized (lasso) GLM receptive fields with a ReLU output non-linearity, fitted with FISTA or Adam in JAX.
+"""L1-penalized (lasso) or elastic-net GLM receptive fields with a ReLU output non-linearity, fitted with FISTA or Adam
+in JAX.
 
 Model: ``y ~ relu(X w + b)`` with ``X`` a pre-computed design matrix (e.g. the stimulus projected onto a separable
-B-spline basis, see ``receptive_fields.compute_basis_features``). Cost: ``mean((y - y_pred) ** 2) + beta * ||w||_1``.
+B-spline basis, see ``receptive_fields.compute_basis_features``). Cost: ``mean((y - y_pred) ** 2) + beta * ||w||_1``
+(lasso) or, with ``l1_ratio < 1`` (elastic net, FISTA only), ``mean((y - y_pred) ** 2) + beta * (l1_ratio * ||w||_1 +
+(1 - l1_ratio) / 2 * ||w||_2^2)`` (the scikit-learn parametrization).
 
 The default solver is FISTA (``fit_fista``): proximal gradient steps (soft-thresholding, so weights are exactly zero
-where the penalty wins) with Nesterov momentum and adaptive restart. It needs far fewer iterations than Adam and
-converges to a lower cost. The Adam solver (``fit_adam``) reproduces RFEst, see below.
+where the penalty wins; for the elastic net followed by the exact shrinkage of the L2 term) with Nesterov momentum and
+adaptive restart. It needs far fewer iterations than Adam and converges to a lower cost. The Adam solver
+(``fit_adam``, lasso only) reproduces RFEst, see below.
 
 Based on RFEst (https://github.com/berenslab/RFEst, MIT license), via the RFEst GLM extension of
 djimaging (eulerlab), which subclasses ``rfest.GLM`` but overrides its design matrix handling, initialization and
@@ -55,12 +59,15 @@ def _forwardpass(p, x):
     return jnp.where(out > 0., out, 0.).astype(_DTYPE)
 
 
-def _costs(p, x, y, beta):
-    """Per-response MSE plus L1 penalty, as ``rfest.loss.loss_mse(y, r) + rfest.loss.loss_penalty(w, alpha=1., beta)``.
+def _costs(p, x, y, beta, beta_l2=None):
+    """Per-response MSE plus L1 penalty, as ``rfest.loss.loss_mse(y, r) + rfest.loss.loss_penalty(w, alpha=1., beta)``,
+    plus ``beta_l2 / 2 * ||w||_2^2`` if given (elastic net, with ``beta`` the L1 part).
     Returns the summed cost (for the gradient) and the per-response costs."""
     mse = jnp.mean((y - _forwardpass(p, x)) ** 2, axis=0)
     l1 = jnp.sum(jnp.abs(p['stimulus']), axis=0)
     costs = mse + beta * l1
+    if beta_l2 is not None:
+        costs = costs + 0.5 * beta_l2 * jnp.sum(p['stimulus'] ** 2, axis=0)
     return costs.sum(), costs
 
 
@@ -183,11 +190,18 @@ def fista_steps(x, precondition='none', step_scale=1., n_iter=100, margin=1.05, 
     return np.asarray(step_scale / (c * d_w), np.float64), step_scale / c
 
 
-def _gradient_mapping(w, vw, gw, beta, step_w):
-    """``(w - prox(vw)) / step`` with ``vw = w - step gw``, computed from the gradient (``gw + beta sign(vw)`` where the
-    prox keeps the weight, ``w / step`` where it zeroes it) instead of the difference, which is 0 once the update is
-    below float32 resolution of ``w`` although the gradient is not."""
-    return jnp.where(jnp.abs(vw) > step_w * beta, gw + beta * jnp.sign(vw), w / step_w)
+def _prox(vw, beta, beta_l2, step_w):
+    """Proximal step of ``beta ||w||_1 + beta_l2 / 2 ||w||_2^2``: soft-thresholding, then shrinkage by ``1 + step
+    beta_l2`` (exact for the elastic net, so the step sizes of the MSE alone still apply)."""
+    return jnp.sign(vw) * jnp.maximum(jnp.abs(vw) - step_w * beta, 0.) / (1. + step_w * beta_l2)
+
+
+def _gradient_mapping(w, vw, gw, beta, beta_l2, step_w):
+    """``(w - prox(vw)) / step`` with ``vw = w - step gw``, computed from the gradient (``(gw + beta_l2 w + beta
+    sign(vw)) / (1 + step beta_l2)`` where the prox keeps the weight, ``w / step`` where it zeroes it) instead of the
+    difference, which is 0 once the update is below float32 resolution of ``w`` although the gradient is not."""
+    return jnp.where(jnp.abs(vw) > step_w * beta,
+                     (gw + beta_l2 * w + beta * jnp.sign(vw)) / (1. + step_w * beta_l2), w / step_w)
 
 
 @functools.lru_cache(maxsize=None)
@@ -196,18 +210,19 @@ def _get_fista_chunk_runner(num_iters, gtol, tolerance, min_iters):
     state. Compiled once per settings and input shapes."""
 
     def body(data, s, i):
-        x, y, beta, step_w, step_b = data['x'], data['y'], data['beta'], data['step_w'], data['step_b']
+        x, y, beta, beta_l2 = data['x'], data['y'], data['beta'], data['beta_l2']
+        step_w, step_b = data['step_w'], data['step_b']
         n = x.shape[0]
         # gradient of the MSE at the extrapolated point z
         out = x @ s['zw'] + s['zb']
         r = jnp.where(out > 0., out - y, 0.)
         gw, gb = (2. / n) * (x.T @ r), (2. / n) * r.sum(axis=0)
-        # proximal step: soft-thresholding of the weights, the intercept is not penalized
+        # proximal step: soft-thresholding (and L2 shrinkage) of the weights, the intercept is not penalized
         vw = s['zw'] - step_w * gw
-        w = jnp.sign(vw) * jnp.maximum(jnp.abs(vw) - step_w * beta, 0.)
+        w = _prox(vw, beta, beta_l2, step_w)
         b = s['zb'] - step_b * gb
         # gradient mapping G = (z - prox step) / step, in gradient units: zero iff z is optimal (KKT conditions)
-        g_map_w, g_map_b = _gradient_mapping(s['zw'], vw, gw, beta, step_w), gb
+        g_map_w, g_map_b = _gradient_mapping(s['zw'], vw, gw, beta, beta_l2, step_w), gb
         # adaptive restart (O'Donoghue & Candes 2015): drop the momentum if it points against the proximal step
         restart = (jnp.sum(g_map_w * (w - s['w']), axis=0) + g_map_b * (b - s['b'])) > 0.
         t = jnp.where(restart, 1., (1. + jnp.sqrt(1. + 4. * s['t'] ** 2)) / 2.)
@@ -232,7 +247,8 @@ def _get_fista_chunk_runner(num_iters, gtol, tolerance, min_iters):
     return run_chunk
 
 
-def fit_fista(x, y, w0, b0, beta, steps, g_scale, num_iters=5000, gtol=1e-4, tolerance=3, min_iters=10):
+def fit_fista(x, y, w0, b0, beta, steps, g_scale, beta_l2=None, num_iters=5000, gtol=1e-4, tolerance=3,
+              min_iters=10):
     """Minimize the cost of each response with FISTA (accelerated proximal gradient with adaptive restart) from
     ``(w0, b0)``. Weights are exactly zero where the penalty wins.
 
@@ -245,16 +261,20 @@ def fit_fista(x, y, w0, b0, beta, steps, g_scale, num_iters=5000, gtol=1e-4, tol
         x: Design matrix ``(n_samples, n_features)``.
         y: Responses ``(n_samples, n_responses)``.
         w0, b0: Initial weights ``(n_features, n_responses)`` and intercepts ``(n_responses,)``.
-        beta: Penalty per response ``(n_responses,)``.
+        beta: (L1) penalty per response ``(n_responses,)``.
         steps: Step sizes ``(step_w (n_features,), step_b)``, see ``fista_steps``.
         g_scale: Gradient scale per response ``(n_responses,)``, e.g. ``beta_max``.
+        beta_l2: L2 penalty per response ``(n_responses,)`` (elastic net: cost term ``beta_l2 / 2 ||w||_2^2``), or None
+            (lasso).
 
     Returns:
         tuple: Weights, intercepts and a list of info dicts per response (``n_iter``, ``n_restart``, ``res`` = last
         relative optimality residual, ``cost`` = final train cost, ``stop`` = ``'train_stop'`` or ``'maxiter_stop'``).
     """
     run_chunk = _get_fista_chunk_runner(num_iters, gtol, tolerance, min_iters)
+    l2 = beta_l2 is not None
     data = dict(x=x, y=jnp.asarray(y, _DTYPE), beta=jnp.asarray(beta, _DTYPE),
+                beta_l2=jnp.asarray(beta_l2 if l2 else np.zeros_like(np.asarray(beta)), _DTYPE),
                 step_w=jnp.asarray(steps[0], _DTYPE)[:, None], step_b=jnp.asarray(steps[1], _DTYPE),
                 g_scale=jnp.asarray(g_scale, _DTYPE))
     w0, b0 = jnp.asarray(w0, _DTYPE), jnp.asarray(b0, _DTYPE)
@@ -269,42 +289,49 @@ def fit_fista(x, y, w0, b0, beta, steps, g_scale, num_iters=5000, gtol=1e-4, tol
             break
 
     p = dict(stimulus=s['w'], intercept=dict(stimulus=jnp.zeros_like(s['b']), **{'global': s['b']}))
-    costs = np.asarray(_costs(p, x, data['y'], data['beta'])[1])
+    costs = np.asarray(_costs(p, x, data['y'], data['beta'], data['beta_l2'] if l2 else None)[1])
     active, n_iter, n_restart, res = (np.asarray(s[k]) for k in ('active', 'n_iter', 'n_restart', 'res'))
     infos = [dict(n_iter=int(n_iter[r]), n_restart=int(n_restart[r]), res=float(res[r]), cost=float(costs[r]),
                   stop='maxiter_stop' if active[r] else 'train_stop') for r in range(n_resp)]
     return s['w'], s['b'], infos
 
 
-def optimality_residual(x, y, weights, intercepts, beta, g_scale, steps):
+def optimality_residual(x, y, weights, intercepts, beta, g_scale, steps, beta_l2=None):
     """Relative optimality residual of any solution (e.g. also of Adam): the largest absolute entry of the gradient
     mapping ``(w - prox(w - step g)) / step`` at the solution (as the FISTA stopping criterion, but at the solution
     instead of the extrapolated point), divided by ``g_scale``. Zero iff the lasso optimality conditions hold; unlike
     the plain violation of these conditions, it is continuous in ``w`` (a weight of 1e-12 that should be zero only
     counts as 1e-12 / step). Weights ``(n_features, n_models)``, intercepts, ``beta`` and ``g_scale``
     ``(n_models,)``, ``y`` ``(n_samples, n_models)``, ``steps`` from ``fista_steps`` (use the same for all solutions
-    that are compared)."""
+    that are compared). ``beta_l2``: L2 penalty for the elastic net, as in ``fit_fista``."""
     x = to_device(x)
     w, b = jnp.asarray(weights, _DTYPE), jnp.asarray(intercepts, _DTYPE)
     beta = jnp.asarray(beta, _DTYPE)
+    beta_l2 = jnp.zeros_like(beta) if beta_l2 is None else jnp.asarray(beta_l2, _DTYPE)
     step_w, step_b = jnp.asarray(steps[0], _DTYPE)[:, None], jnp.asarray(steps[1], _DTYPE)
     out = x @ w + b
     r = jnp.where(out > 0., out - jnp.asarray(y, _DTYPE), 0.)
     gw, gb = (2. / x.shape[0]) * (x.T @ r), (2. / x.shape[0]) * r.sum(axis=0)
-    g_map_w = _gradient_mapping(w, w - step_w * gw, gw, beta, step_w)
+    g_map_w = _gradient_mapping(w, w - step_w * gw, gw, beta, beta_l2, step_w)
     return np.asarray(jnp.maximum(jnp.max(jnp.abs(g_map_w), axis=0), jnp.abs(gb)) / jnp.asarray(g_scale, _DTYPE),
                       np.float64)
 
 
 def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e-3, step_size_finetune=1e-3,
-                   precondition='none', step_scale=1., **kwargs):
-    """Lasso GLM ``y ~ relu(X w + b)`` for all penalties ``alphas_rel`` (relative to ``beta_max``), large to small.
+                   precondition='none', step_scale=1., l1_ratio=1., **kwargs):
+    """Lasso (or elastic-net) GLM ``y ~ relu(X w + b)`` for all penalties ``alphas_rel`` (relative to ``beta_max``),
+    large to small.
 
     The first (largest) penalty starts from zero weights and ``b = max(mean(y), eps_mean)`` (so the zero-weight model
     predicts the mean response and the ReLU is not dead), the others warm-start from the previous penalty.
     ``beta_max`` (``compute_beta_max``) is the smallest penalty that gives all-zero weights for the linear model (only
     approximate with the ReLU). Several responses are fitted jointly (see module docstring), each with its own
     ``beta_max``.
+
+    With ``l1_ratio < 1`` (FISTA only), the penalty ``beta = alpha_rel * beta_max / l1_ratio`` is split into the L1
+    part ``l1_ratio * beta`` and the L2 part ``(1 - l1_ratio) * beta`` (cost term ``(1 - l1_ratio) * beta / 2
+    ||w||_2^2``), so that ``alpha_rel = 1`` still gives all-zero weights (as ``alpha_max`` in scikit-learn's
+    ``ElasticNet``).
 
     Two solvers minimize the same cost: ``'fista'`` (``fit_fista``, step sizes from ``fista_steps`` with
     ``precondition`` and ``step_scale``, residuals relative to ``beta_max``; gives exact zeros) and ``'adam'``
@@ -316,6 +343,7 @@ def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e
             centered, so that their mean is positive.
         alphas_rel: Penalties relative to ``beta_max``.
         solver: ``'fista'`` or ``'adam'``.
+        l1_ratio: Share of the L1 penalty, ``1`` = lasso, ``0 < l1_ratio < 1`` = elastic net (FISTA only).
         **kwargs: Passed to ``fit_fista`` or ``fit_adam``.
 
     Returns:
@@ -326,6 +354,10 @@ def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e
     """
     x = to_device(x)
     alphas_rel = np.asarray(alphas_rel)
+    if not 0. < l1_ratio <= 1.:
+        raise ValueError(f'l1_ratio must be in (0, 1], got {l1_ratio}.')
+    if l1_ratio < 1. and solver != 'fista':
+        raise ValueError('The elastic net (l1_ratio < 1) is only implemented for FISTA.')
     y = np.asarray(y)  # beta_max and the initial intercept are computed before the cast to float32 (as in the sweep)
     single = y.ndim == 1
     y = y.reshape(y.shape[0], -1)
@@ -349,7 +381,9 @@ def fit_lasso_path(x, y, alphas_rel, solver='fista', eps_mean=1e-3, step_size=3e
         t0 = time.time()
         beta = alphas_rel[a] * beta_max
         if solver == 'fista':
-            w, b, info = fit_fista(x, y, w, b, beta, steps, beta_max, **kwargs)
+            # lasso: beta_l2 None, so the cost is computed exactly as before
+            beta_l1, beta_l2 = (beta, None) if l1_ratio == 1. else (beta, (1. - l1_ratio) / l1_ratio * beta)
+            w, b, info = fit_fista(x, y, w, b, beta_l1, steps, beta_max, beta_l2=beta_l2, **kwargs)
             weights[:, a], intercepts[:, a] = np.asarray(w).T, np.asarray(b, float)
         else:
             p, info = fit_adam(x, y, p, beta, step_size=step_size if k == 0 else step_size_finetune, **kwargs)

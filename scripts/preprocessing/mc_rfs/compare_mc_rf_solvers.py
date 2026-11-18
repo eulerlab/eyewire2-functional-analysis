@@ -12,12 +12,13 @@
 # ---
 
 # %% [markdown]
-# # Mouse-cam RFs: FISTA vs. Adam
+# # Mouse-cam RFs: FISTA vs. Adam vs. elastic net
 #
-# Compares `df_eyewire2_roi_level_mc_rf.parquet` (FISTA) with `df_eyewire2_roi_level_mc_rf_adam.parquet`
-# (`fit_mc_rfs.py --solver adam`), each at its own selected penalty:
-# - `mc_rf_solvers_cc`: test correlation of the selected penalty, FISTA vs. Adam, per ROI;
-# - `mc_rf_solvers_examples`: per ROI sRF green / UV and tRFs, FISTA (left) and Adam (right).
+# Compares `df_eyewire2_roi_level_mc_rf.parquet` (lasso, FISTA) with the other solvers of `fit_mc_rfs.py`
+# (`--solver adam`: lasso, Adam; `--solver enet`: elastic net, FISTA), each at its own selected penalty. Solvers whose
+# parquet does not exist yet are skipped.
+# - `mc_rf_solvers_cc`: test correlation of the selected penalty, each solver vs. FISTA, per ROI;
+# - `mc_rf_solvers_examples`: per ROI sRF green / UV and tRFs, one block per solver (left to right).
 # Figures go to `figures/` next to this script.
 
 # %%
@@ -35,20 +36,32 @@ HERE = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() els
 FIG_DIR = os.path.join(HERE, 'figures')
 os.makedirs(FIG_DIR, exist_ok=True)
 MC_RF_DIR = os.path.join(data_loader.DATA_ROOT, 'mc_rfs')
-SOLVERS = {'fista': 'df_eyewire2_roi_level_mc_rf.parquet', 'adam': 'df_eyewire2_roi_level_mc_rf_adam.parquet'}
+REFERENCE = 'fista'
+SOLVERS = {'fista': 'df_eyewire2_roi_level_mc_rf.parquet', 'adam': 'df_eyewire2_roi_level_mc_rf_adam.parquet',
+           'enet0.5': 'df_eyewire2_roi_level_mc_rf_enet0.5.parquet'}
 KEY_COLS = ['experimenter', 'date', 'exp_num', 'field', 'roi_id']
 CH_COLORS = {'green': 'forestgreen', 'uv': 'darkviolet'}
 MIN_SURROUND_VOL = 0.1
 EXAMPLES = [('GCL0', 5), ('GCL0', 68), ('GCL0', 10), ('GCL1', 46), ('GCL2', 54), ('GCL3', 26), ('GCL4', 63),
             ('GCL0', 9)]
-N_BEST = 8  # additionally plot the ROIs with the best test correlation (max over both solvers)
+N_BEST = 8  # additionally plot the ROIs with the best test correlation (max over all solvers)
 
 # %%
+missing = [s for s, f in SOLVERS.items() if not os.path.exists(os.path.join(MC_RF_DIR, f))]
+if missing:
+    print(f'Skipping {missing} (no parquet)')
+solvers = [s for s in SOLVERS if s not in missing]
+assert REFERENCE in solvers and len(solvers) > 1, solvers
+
 df_rois = data_loader.load_df_rois().reset_index(drop=True)
-dfs = {s: data_loader.load_parquet_df(os.path.join(MC_RF_DIR, f)) for s, f in SOLVERS.items()}
-df = dfs['fista'].merge(dfs['adam'], on=KEY_COLS, suffixes=('@fista', '@adam'), validate='one_to_one').merge(
-    df_rois[KEY_COLS + ['qfilt', 'supergroup']], on=KEY_COLS, validate='one_to_one')
-print(f'{len(df)} ROIs in both ({", ".join(f"{s}: {len(d)}" for s, d in dfs.items())}), {df.qfilt.sum()} pass qfilt')
+df = df_rois[KEY_COLS + ['qfilt', 'supergroup']]
+n_rows = {}
+for s in solvers:
+    d = data_loader.load_parquet_df(os.path.join(MC_RF_DIR, SOLVERS[s]))
+    n_rows[s] = len(d)
+    d = d.rename(columns={c: f'{c}@{s}' for c in d.columns if c not in KEY_COLS})
+    df = df.merge(d, on=KEY_COLS, validate='one_to_one')
+print(f'{len(df)} ROIs in all ({", ".join(f"{s}: {n}" for s, n in n_rows.items())}), {df.qfilt.sum()} pass qfilt')
 
 
 def get(row, col, solver):
@@ -56,21 +69,21 @@ def get(row, col, solver):
 
 
 # %%
-fig, axs = plt.subplots(1, 2, figsize=(7, 3.2))
-ax = axs[0]
-for qfilt, c in ((False, 'gray'), (True, 'C3')):
-    d = df[df.qfilt == qfilt]
-    ax.scatter(d['mc_rf_best_cc@fista'], d['mc_rf_best_cc@adam'], s=4, c=c, alpha=0.6, label=f'qfilt={qfilt}')
-lim = [np.nanmin(df[['mc_rf_best_cc@fista', 'mc_rf_best_cc@adam']].values) - 0.02,
-       np.nanmax(df[['mc_rf_best_cc@fista', 'mc_rf_best_cc@adam']].values) + 0.02]
-ax.plot(lim, lim, c='k', lw=0.5)
-ax.set(xlim=lim, ylim=lim, xlabel='test cc FISTA', ylabel='test cc Adam', aspect='equal')
-ax.legend(fontsize=7)
-ax = axs[1]
-diff = (df['mc_rf_best_cc@adam'] - df['mc_rf_best_cc@fista'])[df.qfilt]
-ax.hist(diff.dropna(), bins=30, color='C3', alpha=0.6)
-ax.axvline(0, c='k', lw=0.5)
-ax.set(xlabel='test cc Adam - FISTA (qfilt)', ylabel='# ROIs', title=f'median {diff.median():+.3f}')
+others = [s for s in solvers if s != REFERENCE]
+fig, axs = plt.subplots(len(others), 2, figsize=(7, 3.2 * len(others)), squeeze=False)
+cc_cols = [f'mc_rf_best_cc@{s}' for s in solvers]
+lim = [np.nanmin(df[cc_cols].values) - 0.02, np.nanmax(df[cc_cols].values) + 0.02]
+for (ax, ax_hist), s in zip(axs, others):
+    for qfilt, c in ((False, 'gray'), (True, 'C3')):
+        d = df[df.qfilt == qfilt]
+        ax.scatter(d[f'mc_rf_best_cc@{REFERENCE}'], d[f'mc_rf_best_cc@{s}'], s=4, c=c, alpha=0.6, label=f'qfilt={qfilt}')
+    ax.plot(lim, lim, c='k', lw=0.5)
+    ax.set(xlim=lim, ylim=lim, xlabel=f'test cc {REFERENCE}', ylabel=f'test cc {s}', aspect='equal')
+    ax.legend(fontsize=7)
+    diff = (df[f'mc_rf_best_cc@{s}'] - df[f'mc_rf_best_cc@{REFERENCE}'])[df.qfilt]
+    ax_hist.hist(diff.dropna(), bins=30, color='C3', alpha=0.6)
+    ax_hist.axvline(0, c='k', lw=0.5)
+    ax_hist.set(xlabel=f'test cc {s} - {REFERENCE} (qfilt)', ylabel='# ROIs', title=f'median {diff.median():+.3f}')
 plt.tight_layout()
 plt.savefig(os.path.join(FIG_DIR, 'mc_rf_solvers_cc.png'), dpi=120)
 plt.show()
@@ -100,19 +113,21 @@ def plot_rf(row, solver, axs):
 
 
 ex_idx = [df.index[(df.field == f) & (df.roi_id == r)][0] for f, r in EXAMPLES if ((df.field == f) & (df.roi_id == r)).any()]
-best_cc = df[['mc_rf_best_cc@fista', 'mc_rf_best_cc@adam']].max(axis=1)
+best_cc = df[cc_cols].max(axis=1)
 best_idx = [i for i in best_cc.sort_values(ascending=False).index if i not in ex_idx][:N_BEST]
 rows = df.loc[ex_idx + best_idx]
-n_cols = 2  # ROIs per figure row, each FISTA | Adam
-n_rows = int(np.ceil(len(rows) / n_cols))
-fig = plt.figure(figsize=(6.4 * n_cols, 1.5 * n_rows))
-outer = fig.add_gridspec(n_rows, n_cols, hspace=0.7, wspace=0.12)
+n_solvers = len(solvers)
+n_cols = 2 if n_solvers <= 2 else 1  # ROIs per figure row, each with one block (sRF green, sRF UV, tRFs) per solver
+n_fig_rows = int(np.ceil(len(rows) / n_cols))
+fig = plt.figure(figsize=(3.2 * n_solvers * n_cols, 1.5 * n_fig_rows))
+outer = fig.add_gridspec(n_fig_rows, n_cols, hspace=0.7, wspace=0.12)
+width_ratios = ([1, 1, 1.4, 0.25] * n_solvers)[:-1]
 for k, (_, row) in enumerate(rows.iterrows()):
-    inner = outer[k // n_cols, k % n_cols].subgridspec(1, 7, width_ratios=[1, 1, 1.4, 0.25, 1, 1, 1.4], wspace=0.08)
-    for j0, solver in ((0, 'fista'), (4, 'adam')):
-        plot_rf(row, solver, [fig.add_subplot(inner[0, j0 + j]) for j in range(3)])
-    fig.axes[-6].text(0, 1.45, f'{row.field} {row.roi_id} {row.supergroup}', transform=fig.axes[-6].transAxes,
-                      fontsize=7, fontweight='bold')
+    inner = outer[k // n_cols, k % n_cols].subgridspec(1, len(width_ratios), width_ratios=width_ratios, wspace=0.08)
+    for i, solver in enumerate(solvers):
+        plot_rf(row, solver, [fig.add_subplot(inner[0, 4 * i + j]) for j in range(3)])
+    fig.axes[-3 * n_solvers].text(0, 1.45, f'{row.field} {row.roi_id} {row.supergroup}',
+                                  transform=fig.axes[-3 * n_solvers].transAxes, fontsize=7, fontweight='bold')
 plt.savefig(os.path.join(FIG_DIR, 'mc_rf_solvers_examples.pdf'), bbox_inches='tight')
 plt.savefig(os.path.join(FIG_DIR, 'mc_rf_solvers_examples.png'), dpi=120, bbox_inches='tight')
 plt.show()

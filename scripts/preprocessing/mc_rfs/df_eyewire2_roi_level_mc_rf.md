@@ -17,9 +17,14 @@ Produced by `scripts/preprocessing/mc_rfs/fit_mc_rfs.py` in eyewire2-functional-
   restart, JAX), which gives exact zeros. It is trained on both training sequences (`train1` + `train2`, 2 x 54
   five-second clips) and has no cross-validation. The model and cost are those of the GLM of RFEst
   (https://github.com/berenslab/RFEst).
-- **Penalty sweep**: 8 penalties, log-spaced from 1e-4 to 1 relative to `alpha_max`. `alpha_max` is the smallest
-  penalty that gives all-zero weights in the linear model, so with the ReLU it is only approximate. The fits run from
-  the largest to the smallest penalty, each warm-started from the previous one.
+- **Solver variants** (parquet suffix): no suffix: lasso, FISTA; `_adam` lasso, Adam as in RFEst (not converged to the
+  lasso optimum, no exact zeros); `_enet{l1_ratio}` elastic net, FISTA, with the cost `MSE + alpha (l1_ratio ||w||_1 +
+  (1 - l1_ratio) / 2 ||w||_2^2)` (scikit-learn convention). At the same relative penalty, the elastic net has the same
+  L1 penalty as the lasso plus an L2 penalty.
+- **Penalty sweep**: log-spaced penalties relative to `alpha_max` (lasso FISTA: 7 from 1e-3 to 1; Adam: 8 from 1e-4 to
+  1; elastic net: 9 from 1e-4 to 1). `alpha_max` is the smallest penalty that gives all-zero weights in the linear
+  model, so with the ReLU it is only approximate. The fits run from the largest to the smallest penalty, each
+  warm-started from the previous one.
 - **Test**: the three repeats of the test sequence (`test1`-`test3`, 25 s each). The first 1.2 s of each repeat are
   skipped. The prediction includes the intercept and the ReLU and is in the units of the response.
 - **Selected RF**: the penalty with the best mean test correlation is chosen per ROI. Because it is chosen on the test
@@ -28,6 +33,8 @@ Produced by `scripts/preprocessing/mc_rfs/fit_mc_rfs.py` in eyewire2-functional-
   centers towards the window center (SD 100 um) and a soft penalty on the distance between the green and UV centers.
 
 ## Per-penalty scores (arrays with one entry per penalty)
+
+Shapes below are given for 8 penalties; the actual number depends on the solver (see above).
 
 - **mc_rf_alphas**: Penalties relative to `alpha_max`, shape `(8,)`.
 - **mc_rf_cc**: Test correlation between prediction and response, averaged over the 3 repeats, shape `(8,)`. NaN if the
@@ -39,7 +46,7 @@ Produced by `scripts/preprocessing/mc_rfs/fit_mc_rfs.py` in eyewire2-functional-
   which gives no exact zeros, the fraction with `|w| > 0.01 max|w|`.)
 - **mc_rf_n_iter**: Number of FISTA iterations, shape `(8,)`.
 - **mc_rf_converged**: False if the fit ran to the maximum number of iterations, shape `(8,)`.
-- **mc_rf_opt_res**: Final optimality residual of the FISTA fit (largest violation of the lasso optimality conditions,
+- **mc_rf_opt_res**: Final optimality residual of the FISTA fit (largest violation of the lasso / elastic-net optimality conditions,
   relative to `alpha_max`; the fit stops once it is small), shape `(8,)`. NaN for Adam.
 
 ## Selected penalty

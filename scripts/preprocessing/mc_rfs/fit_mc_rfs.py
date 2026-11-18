@@ -23,7 +23,9 @@ Usage (one job per field, then merge)::
     python fit_mc_rfs.py --merge             # write the parquet once all fields are done
 
 ``--solver adam`` (with both commands) fits with Adam instead (RFEst, not converged to the lasso optimum) and writes
-``df_eyewire2_roi_level_mc_rf_adam.parquet``; ``compare_mc_rf_solvers.py`` plots both side by side.
+``df_eyewire2_roi_level_mc_rf_adam.parquet``. ``--solver enet`` fits an elastic net (L1 + L2 penalty, FISTA,
+``--l1-ratio``, default 0.5) and writes ``df_eyewire2_roi_level_mc_rf_enet{l1_ratio}.parquet``.
+``compare_mc_rf_solvers.py`` plots the solvers side by side.
 
 Without ``--field`` and ``--merge``, all fields are fitted and then merged.
 """
@@ -38,8 +40,11 @@ parser.add_argument('--out-dir', default=None, help='Output folder (default: <re
 parser.add_argument('--n-cpus', type=int, default=None, help='Limit the number of CPU threads.')
 parser.add_argument('--batch-size', type=int, default=128,
                     help='Max. number of ROIs of a field fitted jointly (lower it if the GPU runs out of memory).')
-parser.add_argument('--solver', choices=('fista', 'adam'), default='fista',
-                    help='Lasso solver. Results are cached separately, the Adam parquet gets the suffix _adam.')
+parser.add_argument('--solver', choices=('fista', 'adam', 'enet'), default='fista',
+                    help='fista: lasso, FISTA; adam: lasso, Adam (RFEst); enet: elastic net, FISTA. Results are cached '
+                         'separately, the parquet gets the suffix _adam / _enet{l1_ratio}.')
+parser.add_argument('--l1-ratio', type=float, default=0.5,
+                    help='--solver enet: share of the L1 penalty (0 < l1_ratio < 1, scikit-learn convention).')
 args = parser.parse_args()
 
 if args.n_cpus:
@@ -86,11 +91,20 @@ SOLVER_SETTINGS = dict(
     # lasso optimum, i.e. additionally regularized by early stopping.
     adam=(np.logspace(-4, 0, 8), dict(num_iters=3000, min_iters=300, atol=1e-6, tolerance=20, step_size=1e-4,
                                       step_size_finetune=1e-3, eps_mean=1e-3)),
+    # Elastic net (FISTA as above, glm.fit_lasso_path with l1_ratio): at the same alpha, the same L1 penalty as the
+    # lasso plus an L2 penalty ((1 - l1_ratio) / l1_ratio times the L1 one), which keeps weak but consistent weights
+    # (e.g. the weaker channel) that the lasso zeroes. One decade lower penalties than the lasso, since the L2 term
+    # regularizes in addition and makes the weak penalties converge faster.
+    enet=(np.logspace(-4, 0, 9), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3,
+                                      l1_ratio=args.l1_ratio)),
 )
 SOLVER = args.solver
+if SOLVER == 'enet' and not 0. < args.l1_ratio < 1.:
+    parser.error(f'--l1-ratio must be in (0, 1) for the elastic net, got {args.l1_ratio}')
+GLM_SOLVER = 'adam' if SOLVER == 'adam' else 'fista'
 LASSO_ALPHAS, FIT_KW = SOLVER_SETTINGS[SOLVER]
-OUT_NAME = OUT_NAME + ('' if SOLVER == 'fista' else f'_{SOLVER}')
-# Non-zero weights: exact for FISTA; for Adam (no exact zeros) |w| > NONZERO_THRESH * max|w|
+OUT_NAME = OUT_NAME + {'fista': '', 'adam': '_adam', 'enet': f'_enet{args.l1_ratio:g}'}[SOLVER]
+# Non-zero weights: exact for FISTA (lasso and elastic net); for Adam (no exact zeros) |w| > NONZERO_THRESH * max|w|
 NONZERO_THRESH = 1e-2
 # sRF fit: DoG per channel, soft prior pulling the centers towards the window center (= field center), soft penalty on
 # the green-UV center distance relative to the center sizes
@@ -149,7 +163,7 @@ def fit_rois(rows, x_train, feats, bases):
     responses = [get_response(row) for row in rows]
     y_train = np.stack([r[train_idxs] for r in responses], axis=1).astype(np.float64)  # (n_train, n_rois)
     y_std = y_train.std(axis=0)
-    weights, intercepts, infos = glm.fit_lasso_path(x_train, y_train / y_std, LASSO_ALPHAS, solver=SOLVER, **FIT_KW)
+    weights, intercepts, infos = glm.fit_lasso_path(x_train, y_train / y_std, LASSO_ALPHAS, solver=GLM_SOLVER, **FIT_KW)
     return [evaluate_roi(responses[r], weights[r], intercepts[r], y_std[r], infos[r], feats, bases)
             for r in range(len(rows))]
 
@@ -163,7 +177,7 @@ def evaluate_roi(response, weights, intercepts, y_std, infos, feats, bases):
     pred = pred[:, n_eval_skip:].transpose(2, 0, 1)  # (n_a, 3, n_t)
     cc = np.stack([colwise_cc(p.T, resp.T) for p in pred])  # (n_a, 3), NaN if the prediction is constant
     mse = np.mean((pred - resp[None]) ** 2, axis=2)  # (n_a, 3)
-    if SOLVER == 'fista':  # exact zeros
+    if GLM_SOLVER == 'fista':  # exact zeros
         frac_nonzero = np.mean(weights != 0, axis=1)
     else:  # Adam only shrinks weights towards zero
         frac_nonzero = np.mean(np.abs(weights) > NONZERO_THRESH * np.abs(weights).max(axis=1, keepdims=True), axis=1)

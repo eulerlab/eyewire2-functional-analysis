@@ -11,19 +11,20 @@ Produced by `scripts/preprocessing/mc_rfs/fit_mc_rfs.py` in eyewire2-functional-
 - **Stimulus**: the MC movie of the field (`mc` column), green and UV channels, binned 2 x 2 to 28 x 28 pixels of 25 um,
   z-scored. The movie is centered on the recording field.
 - **Response**: the positive part of the derivative of `mc_pp_trace`, sampled at the movie frame times (30 Hz).
-- **Model**: lasso GLM `y ~ relu(X w + b)`. `X` is the stimulus projected onto a separable cubic B-spline basis: 15
-  functions over time lags from -1.2 s to +0.3 s, 14 x 14 over space, and the 2 channels. The fit minimizes the MSE plus
-  an L1 penalty on `w`, with the response divided by its std, using FISTA (accelerated proximal gradient with adaptive
-  restart, JAX), which gives exact zeros. It is trained on both training sequences (`train1` + `train2`, 2 x 54
-  five-second clips) and has no cross-validation. The model and cost are those of the GLM of RFEst
-  (https://github.com/berenslab/RFEst).
-- **Solver variants** (parquet suffix): no suffix: lasso, FISTA; `_adam` lasso, Adam as in RFEst (not converged to the
-  lasso optimum, no exact zeros); `_enet{l1_ratio}` elastic net, FISTA, with the cost `MSE + alpha (l1_ratio ||w||_1 +
-  (1 - l1_ratio) / 2 ||w||_2^2)` (scikit-learn convention). At the same relative penalty, the elastic net has the same
-  L1 penalty as the lasso plus an L2 penalty. `_group` group lasso, FISTA: the L1 norm is replaced by the sum over the
-  spatio-temporal basis functions of the Euclidean norm of their (green, UV) weight pair, so both channels of a basis
-  function are zero or non-zero together and the penalty does not favor one channel.
-- **Penalty sweep**: log-spaced penalties relative to `alpha_max` (lasso and group lasso FISTA: 7 from 1e-3 to 1;
+- **Model**: group-lasso GLM `y ~ relu(X w + b)`. `X` is the stimulus projected onto a separable cubic B-spline basis:
+  15 functions over time lags from -1.2 s to +0.3 s, 14 x 14 over space, and the 2 channels. The fit minimizes the MSE
+  plus a group-lasso penalty on `w`: the sum over the spatio-temporal basis functions of the Euclidean norm of their
+  (green, UV) weight pair. Both channels of a basis function are therefore zero or non-zero together, and the penalty
+  does not favor one channel (a plain lasso tends to zero the weaker of the correlated channels, usually green). The
+  response is divided by its std. The solver is FISTA (accelerated proximal gradient with adaptive restart, JAX), which
+  gives exact zeros. It is trained on both training sequences (`train1` + `train2`, 2 x 54 five-second clips) and has
+  no cross-validation. The model is the GLM of RFEst (https://github.com/berenslab/RFEst), with the group penalty in
+  place of its L1 penalty.
+- **Solver variants** (parquet suffix, for comparison): `_lasso` plain L1 penalty, FISTA; `_adam` lasso, Adam as in
+  RFEst (not converged to the lasso optimum, no exact zeros); `_enet{l1_ratio}` elastic net, FISTA, with the cost
+  `MSE + alpha (l1_ratio ||w||_1 + (1 - l1_ratio) / 2 ||w||_2^2)` (scikit-learn convention). At the same relative
+  penalty, the elastic net has the same L1 penalty as the lasso plus an L2 penalty.
+- **Penalty sweep**: log-spaced penalties relative to `alpha_max` (group lasso and lasso: 7 from 1e-3 to 1;
   Adam: 8 from 1e-4 to 1; elastic net: 9 from 1e-4 to 1). `alpha_max` is the smallest penalty that gives all-zero
   weights in the linear model, so with the ReLU it is only approximate. The fits run from the largest to the smallest
   penalty, each warm-started from the previous one.

@@ -12,13 +12,13 @@
 # ---
 
 # %% [markdown]
-# # Mouse-cam RFs: FISTA vs. Adam vs. group lasso vs. elastic net
+# # Mouse-cam RFs: group lasso vs. lasso vs. Adam vs. elastic net
 #
-# Compares `df_eyewire2_roi_level_mc_rf.parquet` (lasso, FISTA) with the other solvers of `fit_mc_rfs.py`
-# (`--solver adam`: lasso, Adam; `--solver group`: group lasso over the channels, FISTA; `--solver enet`: elastic net,
-# FISTA, all `--l1-ratio` runs found), each at its own selected penalty. Solvers whose
+# Compares `df_eyewire2_roi_level_mc_rf.parquet` (group lasso over the channels, FISTA, the default) with the other
+# solvers of `fit_mc_rfs.py` (`--solver lasso`: lasso, FISTA; `--solver adam`: lasso, Adam; `--solver enet`: elastic
+# net, FISTA, all `--l1-ratio` runs found), each at its own selected penalty. Solvers whose
 # parquet does not exist yet are skipped.
-# - `mc_rf_solvers_cc`: test correlation of the selected penalty, each solver vs. FISTA, per ROI;
+# - `mc_rf_solvers_cc`: test correlation of the selected penalty, each solver vs. the group lasso, per ROI;
 # - `mc_rf_solvers_examples`: per ROI sRF green / UV and tRFs, one block per solver (left to right).
 # Figures go to `figures/` next to this script.
 
@@ -38,9 +38,9 @@ HERE = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() els
 FIG_DIR = os.path.join(HERE, 'figures')
 os.makedirs(FIG_DIR, exist_ok=True)
 MC_RF_DIR = os.path.join(data_loader.DATA_ROOT, 'mc_rfs')
-REFERENCE = 'fista'
-SOLVERS = {'fista': 'df_eyewire2_roi_level_mc_rf.parquet', 'adam': 'df_eyewire2_roi_level_mc_rf_adam.parquet',
-           'group': 'df_eyewire2_roi_level_mc_rf_group.parquet'}
+REFERENCE = 'group'
+SOLVERS = {'group': 'df_eyewire2_roi_level_mc_rf.parquet', 'lasso': 'df_eyewire2_roi_level_mc_rf_lasso.parquet',
+           'adam': 'df_eyewire2_roi_level_mc_rf_adam.parquet'}
 # all elastic-net runs (one parquet per --l1-ratio), largest l1_ratio first
 _enet = [os.path.basename(f) for f in glob.glob(os.path.join(MC_RF_DIR, 'df_eyewire2_roi_level_mc_rf_enet*.parquet'))]
 _enet = {f.removeprefix('df_eyewire2_roi_level_mc_rf_').removesuffix('.parquet'): f for f in _enet}

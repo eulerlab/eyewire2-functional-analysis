@@ -1,7 +1,9 @@
-"""Mouse-cam (MC) receptive fields of all 2P ROIs: lasso GLM penalty sweep with a ReLU output non-linearity.
+"""Mouse-cam (MC) receptive fields of all 2P ROIs: group-lasso GLM penalty sweep with a ReLU output non-linearity.
 
-Per ROI, a lasso GLM ``y ~ relu(X w + b)`` on the separable B-spline basis (t x y x x x channel) of the MC movie is
-fitted with FISTA for every penalty of ``LASSO_ALPHAS`` (relative to the smallest penalty giving an all-zero RF, large to
+Per ROI, a GLM ``y ~ relu(X w + b)`` on the separable B-spline basis (t x y x x x channel) of the MC movie is fitted with
+a group-lasso penalty (the green and UV weights of each spatio-temporal basis function form one group, so the penalty
+does not favor one channel; a plain lasso zeroes the weaker of the correlated channels, usually green) with FISTA for
+every penalty of ``LASSO_ALPHAS`` (relative to the smallest penalty giving an all-zero RF, large to
 small, warm-started; ``receptive_fields_glm.fit_lasso_path``, a trimmed, dependency-free version of the RFEst GLM
 (https://github.com/berenslab/RFEst) as extended in djimaging). All ROIs of a field are fitted jointly (up to
 ``--batch-size``), which is much faster on a GPU than one by one and gives the same fits up to floating point noise:
@@ -22,12 +24,10 @@ Usage (one job per field, then merge)::
     python fit_mc_rfs.py --field GCL0        # fit (results cached per ROI, re-running resumes)
     python fit_mc_rfs.py --merge             # write the parquet once all fields are done
 
-``--solver adam`` (with both commands) fits with Adam instead (RFEst, not converged to the lasso optimum) and writes
-``df_eyewire2_roi_level_mc_rf_adam.parquet``. ``--solver enet`` fits an elastic net (L1 + L2 penalty, FISTA,
-``--l1-ratio``, default 0.5) and writes ``df_eyewire2_roi_level_mc_rf_enet{l1_ratio}.parquet``. ``--solver group``
-fits a group lasso (FISTA) with the green and UV weights of each spatio-temporal basis function as one group, so the
-penalty does not favor one channel, and writes ``df_eyewire2_roi_level_mc_rf_group.parquet``.
-``compare_mc_rf_solvers.py`` plots the solvers side by side.
+Other solvers (with both commands; cached separately, the parquet gets a suffix): ``--solver lasso`` (plain lasso,
+FISTA; ``_lasso``), ``--solver adam`` (lasso, Adam as in RFEst, not converged to the lasso optimum; ``_adam``),
+``--solver enet`` (elastic net, FISTA, ``--l1-ratio``; ``_enet{l1_ratio}``). ``compare_mc_rf_solvers.py`` plots the
+solvers side by side.
 
 Without ``--field`` and ``--merge``, all fields are fitted and then merged.
 """
@@ -42,10 +42,10 @@ parser.add_argument('--out-dir', default=None, help='Output folder (default: <re
 parser.add_argument('--n-cpus', type=int, default=None, help='Limit the number of CPU threads.')
 parser.add_argument('--batch-size', type=int, default=128,
                     help='Max. number of ROIs of a field fitted jointly (lower it if the GPU runs out of memory).')
-parser.add_argument('--solver', choices=('fista', 'adam', 'enet', 'group'), default='fista',
-                    help='fista: lasso, FISTA; adam: lasso, Adam (RFEst); enet: elastic net, FISTA; group: group lasso '
-                         'over the channels, FISTA. Results are cached separately, the parquet gets the suffix _adam / '
-                         '_enet{l1_ratio} / _group.')
+parser.add_argument('--solver', choices=('group', 'lasso', 'adam', 'enet'), default='group',
+                    help='group: group lasso over the channels, FISTA (default); lasso: lasso, FISTA; adam: lasso, '
+                         'Adam (RFEst); enet: elastic net, FISTA. Results are cached separately, the parquet of the '
+                         'non-default solvers gets the suffix _lasso / _adam / _enet{l1_ratio}.')
 parser.add_argument('--l1-ratio', type=float, default=0.5,
                     help='--solver enet: share of the L1 penalty (0 < l1_ratio < 1, scikit-learn convention).')
 args = parser.parse_args()
@@ -86,10 +86,10 @@ TEST_BLOCKS = ('test1', 'test2', 'test3')
 DF_T, DF_S = 15, 14
 # Lasso path (penalties relative to alpha_max) and solver settings, per --solver
 SOLVER_SETTINGS = dict(
-    # FISTA (glm.fit_fista). Weaker penalties: rarely best, chance-level test cc, slow to converge.
+    # Lasso, FISTA (glm.fit_fista). Weaker penalties: rarely best, chance-level test cc, slow to converge.
     # bench_mc_rf_solvers.py (GCL0): gtol is never reached (fits stop at num_iters), 2000 iters too few, Jacobi
     # preconditioning best agreement with a converged reference on the selected penalty
-    fista=(np.logspace(-3, 0, 7), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3)),
+    lasso=(np.logspace(-3, 0, 7), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3)),
     # Adam (glm.fit_adam, as RFEst): the last Adam settings before the switch to FISTA (eb4d16c). Not converged to the
     # lasso optimum, i.e. additionally regularized by early stopping.
     adam=(np.logspace(-4, 0, 8), dict(num_iters=3000, min_iters=300, atol=1e-6, tolerance=20, step_size=1e-4,
@@ -100,9 +100,11 @@ SOLVER_SETTINGS = dict(
     # regularizes in addition and makes the weak penalties converge faster.
     enet=(np.logspace(-4, 0, 9), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3,
                                       l1_ratio=args.l1_ratio)),
-    # Group lasso (FISTA as above, glm.fit_lasso_path with group_size): groups = the channels of one spatio-temporal
-    # basis function (channel is the last feature axis of rf.compute_basis_features), so green and UV are kept or
-    # zeroed together. The lasso picks the stronger of the correlated channels (UV) and zeroes green.
+    # Group lasso, the default (FISTA as above, glm.fit_lasso_path with group_size): groups = the channels of one
+    # spatio-temporal basis function (channel is the last feature axis of rf.compute_basis_features), so green and UV
+    # are kept or zeroed together. The lasso picks the stronger of the correlated channels (UV) and zeroes green. GCL0:
+    # same test cc as the lasso (median -0.001), green/UV weight ratio at the selected penalty never ~0 and half as
+    # sensitive to the penalty.
     group=(np.logspace(-3, 0, 7), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3,
                                        group_size=len(mc.MC_CHANNELS))),
 )
@@ -111,7 +113,9 @@ if SOLVER == 'enet' and not 0. < args.l1_ratio < 1.:
     parser.error(f'--l1-ratio must be in (0, 1) for the elastic net, got {args.l1_ratio}')
 GLM_SOLVER = 'adam' if SOLVER == 'adam' else 'fista'
 LASSO_ALPHAS, FIT_KW = SOLVER_SETTINGS[SOLVER]
-OUT_NAME = OUT_NAME + {'fista': '', 'adam': '_adam', 'enet': f'_enet{args.l1_ratio:g}', 'group': '_group'}[SOLVER]
+# name in the settings hash: the lasso was called 'fista' when it was the default, keep its cache
+SOLVER_KEY = {'lasso': 'fista'}.get(SOLVER, SOLVER)
+OUT_NAME = OUT_NAME + {'group': '', 'lasso': '_lasso', 'adam': '_adam', 'enet': f'_enet{args.l1_ratio:g}'}[SOLVER]
 # Non-zero weights: exact for FISTA (lasso, elastic net and group lasso); for Adam (no exact zeros)
 # |w| > NONZERO_THRESH * max|w|
 NONZERO_THRESH = 1e-2
@@ -124,7 +128,7 @@ DOG_PARAMS = ('amp', 'polarity', 'x0', 'y0', 'sx', 'sy', 'theta', 'r2', 'amp_s',
               'surround_rel_amp')
 
 SETTINGS_KEY = hashlib.md5(repr((
-    BIN_XY, DUR_PAST_S, DUR_FUTURE_S, TRAIN_BLOCKS, TEST_BLOCKS, DF_T, DF_S, list(LASSO_ALPHAS), SOLVER, sorted(FIT_KW.items()),
+    BIN_XY, DUR_PAST_S, DUR_FUTURE_S, TRAIN_BLOCKS, TEST_BLOCKS, DF_T, DF_S, list(LASSO_ALPHAS), SOLVER_KEY, sorted(FIT_KW.items()),
     NONZERO_THRESH, SRF_FIT_KIND, CENTER_PRIOR_SD_UM, CENTER_PRIOR_WEIGHT, COUPLING_WEIGHT, 'v2')).encode()).hexdigest()[:8]
 
 blocks = mc.get_frame_blocks()

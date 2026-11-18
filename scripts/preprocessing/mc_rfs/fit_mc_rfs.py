@@ -22,6 +22,9 @@ Usage (one job per field, then merge)::
     python fit_mc_rfs.py --field GCL0        # fit (results cached per ROI, re-running resumes)
     python fit_mc_rfs.py --merge             # write the parquet once all fields are done
 
+``--solver adam`` (with both commands) fits with Adam instead (RFEst, not converged to the lasso optimum) and writes
+``df_eyewire2_roi_level_mc_rf_adam.parquet``; ``compare_mc_rf_solvers.py`` plots both side by side.
+
 Without ``--field`` and ``--merge``, all fields are fitted and then merged.
 """
 import argparse
@@ -35,6 +38,8 @@ parser.add_argument('--out-dir', default=None, help='Output folder (default: <re
 parser.add_argument('--n-cpus', type=int, default=None, help='Limit the number of CPU threads.')
 parser.add_argument('--batch-size', type=int, default=128,
                     help='Max. number of ROIs of a field fitted jointly (lower it if the GPU runs out of memory).')
+parser.add_argument('--solver', choices=('fista', 'adam'), default='fista',
+                    help='Lasso solver. Results are cached separately, the Adam parquet gets the suffix _adam.')
 args = parser.parse_args()
 
 if args.n_cpus:
@@ -71,12 +76,20 @@ DUR_PAST_S, DUR_FUTURE_S = 1.2, 0.3
 TRAIN_BLOCKS = ('train1', 'train2')
 TEST_BLOCKS = ('test1', 'test2', 'test3')
 DF_T, DF_S = 15, 14
-# Lasso path (penalties relative to alpha_max) and solver settings (FISTA, see glm.fit_fista)
-LASSO_ALPHAS = np.logspace(-3, 0, 7)  # weaker penalties: rarely best, chance-level test cc, slow to converge
-SOLVER = 'fista'
-# bench_mc_rf_solvers.py (GCL0): gtol is never reached (fits stop at num_iters), 2000 iters too few, Jacobi
-# preconditioning best agreement with a converged reference on the selected penalty
-FIT_KW = dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3)
+# Lasso path (penalties relative to alpha_max) and solver settings, per --solver
+SOLVER_SETTINGS = dict(
+    # FISTA (glm.fit_fista). Weaker penalties: rarely best, chance-level test cc, slow to converge.
+    # bench_mc_rf_solvers.py (GCL0): gtol is never reached (fits stop at num_iters), 2000 iters too few, Jacobi
+    # preconditioning best agreement with a converged reference on the selected penalty
+    fista=(np.logspace(-3, 0, 7), dict(num_iters=5000, gtol=1e-3, tolerance=3, precondition='jacobi', eps_mean=1e-3)),
+    # Adam (glm.fit_adam, as RFEst): the last Adam settings before the switch to FISTA (eb4d16c). Not converged to the
+    # lasso optimum, i.e. additionally regularized by early stopping.
+    adam=(np.logspace(-4, 0, 8), dict(num_iters=3000, min_iters=300, atol=1e-6, tolerance=20, step_size=1e-4,
+                                      step_size_finetune=1e-3, eps_mean=1e-3)),
+)
+SOLVER = args.solver
+LASSO_ALPHAS, FIT_KW = SOLVER_SETTINGS[SOLVER]
+OUT_NAME = OUT_NAME + ('' if SOLVER == 'fista' else f'_{SOLVER}')
 # Non-zero weights: exact for FISTA; for Adam (no exact zeros) |w| > NONZERO_THRESH * max|w|
 NONZERO_THRESH = 1e-2
 # sRF fit: DoG per channel, soft prior pulling the centers towards the window center (= field center), soft penalty on
@@ -212,7 +225,7 @@ def merge(df_rois):
     os.makedirs(OUT_DIR, exist_ok=True)
     out_path = os.path.join(OUT_DIR, f'{OUT_NAME}.parquet')
     io.serialize_numpy_arrays(df).to_parquet(out_path, engine='fastparquet', index=False)
-    shutil.copy(os.path.join(HERE, f'{OUT_NAME}.md'), os.path.join(OUT_DIR, f'{OUT_NAME}.md'))
+    shutil.copy(os.path.join(HERE, 'df_eyewire2_roi_level_mc_rf.md'), os.path.join(OUT_DIR, f'{OUT_NAME}.md'))
     print(f'Wrote {out_path}: {df.shape[0]} ROIs x {df.shape[1]} columns')
 
 

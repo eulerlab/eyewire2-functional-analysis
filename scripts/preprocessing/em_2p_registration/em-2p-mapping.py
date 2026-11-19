@@ -49,7 +49,7 @@ data_folder = data_loader.DATA_2P
 morph_folder = data_loader.DATA_SS
 
 MAP_FILE = data_loader.MAP_SHEET
-OUT_FILE = "2p_roi_estimated_em_coordinates.csv"
+OUT_FILE = os.path.join(HERE, "2p_roi_estimated_em_coordinates.csv")
 LINK_FILE = "neuroglancer_link.txt"
 
 REG_FILE = os.path.join(data_loader.DATA_REGISTRATION, data_loader.EM_2P_REGISTRATION_FILE)

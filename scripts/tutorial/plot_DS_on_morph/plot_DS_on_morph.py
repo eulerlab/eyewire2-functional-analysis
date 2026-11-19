@@ -18,7 +18,7 @@
 # Plot a single direction-selective cell's moving-bar direction tuning on its
 # EM skeleton, with the skeleton rotated/flipped into the 2p/retinal
 # reference frame using the fitted 2p<->EM registration (see
-# `scripts/preprocessing/em-2p-mapping.py`, which fits and saves it).
+# `scripts/preprocessing/em_2p_registration/em-2p-mapping.py`, which fits and saves it).
 
 # %%
 import os
@@ -41,7 +41,7 @@ REG_FILE = os.path.join(data_loader.DATA_REGISTRATION, data_loader.EM_2P_REGISTR
 # ## Load data
 #
 # Pick a random cell of the target type that has a matched EM skeleton, and
-# load the fitted 2p<->EM registration (run `scripts/preprocessing/em-2p-mapping.py`
+# load the fitted 2p<->EM registration (run `scripts/preprocessing/em_2p_registration/em-2p-mapping.py`
 # first if `REG_FILE` doesn't exist yet).
 
 # %%

@@ -24,7 +24,7 @@ This project uses [uv](https://docs.astral.sh/uv/) for environment/dependency ma
 - `paths.py` — `PROJECT_ROOT` constant, resolved from file location.
 - `data_loader.py` — the main entry point for loading data. `DATA_2P`, `DATA_SS` (spreadsheets), `DATA_SWC` are default data locations under `data/`. Key functions:
   - `load_df_rois` / `load_df_fields` / `load_df_outline` / `load_all_dfs` — load the pre-processed parquet DataFrames (ROI-level traces+QC, field-level metadata, retinal outline). ROI-level data is split across 5 files (`GCL0`..`GCL4`, one per recording field) and concatenated; a `qfilt` quality-filter boolean column is added based on `bar_qidx`/`chirp_qidx` thresholds.
-  - `load_df_rois_morph` — joins ROI-level functional data to the EM/morphology side: 2P ROI (`field`/`roi_id`) → EM-2p mapping sheet → nucleus ID → master proofread-cells spreadsheet. This is the bridge between functional (2P) and structural (EM) data; the underlying registration is fit in `scripts/preprocessing/em-2p-mapping.py`.
+  - `load_df_rois_morph` — joins ROI-level functional data to the EM/morphology side: 2P ROI (`field`/`roi_id`) → EM-2p mapping sheet → nucleus ID → master proofread-cells spreadsheet. This is the bridge between functional (2P) and structural (EM) data; the underlying registration is fit in `scripts/preprocessing/em_2p_registration/em-2p-mapping.py`.
   - `add_skels` — attaches SWC skeletons (via `skeliner`) to a DataFrame keyed by `Latest SegID`.
   - Master spreadsheet filenames (`MAIN_ALL_CELLS_SHEET`, `MAP_SHEET`) are loaded from `data_config.yaml` at the repo root and are dated/versioned — check `data/spreadsheets/` for the current filenames before changing these.
 - `io.py` — `serialize_numpy_arrays`/`restore_numpy_arrays`: parquet can't store nested/multi-dim numpy arrays directly, so array columns are round-tripped through nested lists. `load_parquet_df` in `data_loader.py` calls `restore_numpy_arrays` automatically on every load.
@@ -43,7 +43,7 @@ Every script under `scripts/` is a `.py` file with `# %%` cell markers and jupyt
 
 - `scripts/tutorial/` — worked examples for loading and plotting the released data (raw traces, chirp/bar response overviews by field/type, morphology+function, retinal outline, stimuli).
 - `scripts/analysis/` — actual analysis notebooks (e.g. light adaptation, light-exposure/stimulus-history).
-- `scripts/preprocessing/` — one-off/pipeline scripts that produced derived data checked into the repo, notably `em-2p-mapping.py` (fits the 2P↔EM coordinate registration referenced by `data_loader.load_df_rois_morph`).
+- `scripts/preprocessing/` — one-off/pipeline scripts that produced derived data checked into the repo, notably `em_2p_registration/em-2p-mapping.py` (fits the 2P↔EM coordinate registration referenced by `data_loader.load_df_rois_morph`).
 
 ### `data/` — inputs and reference data (mostly gitignored)
 

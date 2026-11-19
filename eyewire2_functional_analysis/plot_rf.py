@@ -5,11 +5,15 @@ All plots are in the retinal frame of ``plot_morph`` (x = nasal, y = dorsal, in 
 at the ROI position. The mouse-cam movie is centered on the field center (``field_temporal_nasal_pos_um``,
 ``field_ventral_dorsal_pos_um``). The orientation of the movie in the retinal frame is ``receptive_fields.movie_to_retina``
 (an assumption, see there). ``row`` is a ROI row that has the ``mc_rf_*`` columns and the ROI / field positions.
+
+With ``align=True`` (default), RF positions are corrected for the per-field stimulus shift (``rf_alignment.stim_shift``,
+measured with the moving bar); place the skeleton with ``space_mapping.align_and_place_skel`` (EM affine on by default)
+to also correct the EM -> 2p stretch. ``align=False``: the stimulus as assumed (centered on the field).
 """
 import matplotlib.pyplot as plt
 import numpy as np
 
-from eyewire2_functional_analysis import plot_morph, receptive_fields as rf
+from eyewire2_functional_analysis import plot_morph, receptive_fields as rf, rf_alignment
 from eyewire2_functional_analysis.stimulus import mouse_cam as mc
 
 CH_COLORS = {'green': '#2ca02c', 'uv': '#8e44ad'}
@@ -23,29 +27,32 @@ def dog_params(row, ch: str) -> dict:
     return {k.removeprefix(prefix): row[k] for k in row.index if k.startswith(prefix)}
 
 
-def srf_retina(row, ch: str) -> tuple[np.ndarray, tuple[float, float, float, float]]:
+def srf_retina(row, ch: str, align: bool = True) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     """sRF of channel ``ch`` in the retinal frame and its extent ``(left, right, bottom, top)`` in um relative to the
-    soma, to be shown with ``imshow(img, extent=extent, origin='lower')``."""
+    soma, to be shown with ``imshow(img, extent=extent, origin='lower')``. ``align``: correct for the stimulus shift of
+    the field (see the module docstring)."""
     img = rf.movie_to_retina(row[f'mc_rf_{ch}_srf'])
     px = row.mc_rf_pixel_size_um
     cx = row.field_temporal_nasal_pos_um - row.temporal_nasal_pos_um  # stimulus center relative to the soma
     cy = row.field_ventral_dorsal_pos_um - row.ventral_dorsal_pos_um
+    if align:
+        cx, cy = rf_alignment.correct_rf_xy(cx, cy, row.field)
     ny, nx = img.shape
     return img, (cx - nx * px / 2, cx + nx * px / 2, cy - ny * px / 2, cy + ny * px / 2)
 
 
-def movie_px_to_retina_um(row, x, y, shape) -> tuple[np.ndarray, np.ndarray]:
+def movie_px_to_retina_um(row, x, y, shape, align: bool = True) -> tuple[np.ndarray, np.ndarray]:
     """Map movie pixel coordinates (``x`` = column, ``y`` = row of the sRF array of ``shape``) to the retinal frame (um
     relative to the soma), consistent with ``srf_retina`` (pixel centers)."""
     ny, nx = shape
     img_r = (nx - 1) - np.asarray(x)  # rows of the retinal image (see `movie_to_retina`: transpose, both axes reversed)
     img_c = (ny - 1) - np.asarray(y)
-    _, (left, _, bottom, _) = srf_retina(row, 'green')
+    _, (left, _, bottom, _) = srf_retina(row, 'green', align=align)
     px = row.mc_rf_pixel_size_um
     return left + (img_c + 0.5) * px, bottom + (img_r + 0.5) * px
 
 
-def dog_ellipse(row, ch: str, which: str = 'center', n_sigma: float = 2., n: int = 200):
+def dog_ellipse(row, ch: str, which: str = 'center', n_sigma: float = 2., n: int = 200, align: bool = True):
     """``n_sigma`` ellipse (default 2: the ``exp(-2)`` contour of the unit Gaussian) of the DoG center or surround of
     channel ``ch`` in the retinal frame (um relative to the soma). Returns ``(xs, ys)``, or None if not fitted."""
     p = dog_params(row, ch)
@@ -57,7 +64,7 @@ def dog_ellipse(row, ch: str, which: str = 'center', n_sigma: float = 2., n: int
     c, s = np.cos(p['theta']), np.sin(p['theta'])
     # Principal axes of `receptive_fields._gauss2d` in (column, row) coordinates: sx along (cos, -sin), sy along (sin, cos)
     x, y = p['x0'] + c * u + s * v, p['y0'] - s * u + c * v
-    return movie_px_to_retina_um(row, x, y, row[f'mc_rf_{ch}_srf'].shape)
+    return movie_px_to_retina_um(row, x, y, row[f'mc_rf_{ch}_srf'].shape, align=align)
 
 
 def surround_volume(row, ch: str) -> float:
@@ -67,14 +74,14 @@ def surround_volume(row, ch: str) -> float:
 
 
 def draw_dog(ax, row, ch: str, color=None, lw: float = 1.2, min_surround_vol: float = 0.1, center_ls='-',
-             halo: bool = True, zorder: int = 4) -> None:
+             halo: bool = True, zorder: int = 4, align: bool = True) -> None:
     """Draw the 2-sigma ellipses of the DoG center (``center_ls``) and, if its relative volume is at least
     ``min_surround_vol``, the surround (dotted) of channel ``ch``. ``halo`` adds a thin white outline for contrast."""
     color = color or CH_COLORS[ch]
     for which, ls in (('center', center_ls), ('surround', ':')):
         if which == 'surround' and not surround_volume(row, ch) >= min_surround_vol:
             continue
-        xy = dog_ellipse(row, ch, which)
+        xy = dog_ellipse(row, ch, which, align=align)
         if xy is None:
             continue
         if halo:
@@ -90,18 +97,18 @@ def cell_radius(skel, margin: float = 20.) -> float:
     return float(np.abs(pts).max()) + margin
 
 
-def rf_radius(row, chs=mc.MC_CHANNELS, margin: float = 20.) -> float:
+def rf_radius(row, chs=mc.MC_CHANNELS, margin: float = 20., align: bool = True) -> float:
     """Half-width of a soma-centered square that contains the 2-sigma DoG center ellipses of ``chs``, plus ``margin``."""
-    rads = [np.abs(np.concatenate(xy)).max() for ch in chs if (xy := dog_ellipse(row, ch)) is not None]
+    rads = [np.abs(np.concatenate(xy)).max() for ch in chs if (xy := dog_ellipse(row, ch, align=align)) is not None]
     return float(max(rads)) + margin if rads else 0.
 
 
 def plot_srf_on_morph(ax, row, skel, ch: str, vabsmax: float | None = None, show_fit=True, fit_chs=None,
                       skel_color='k', skel_lw: float = 0.6, img_alpha: float = 0.9, interpolation='bicubic',
-                      min_surround_vol: float = 0.1):
+                      min_surround_vol: float = 0.1, align: bool = True):
     """sRF of channel ``ch`` with the skeleton (soma at the origin, see ``space_mapping.align_and_place_skel``) and the
     DoG ellipses of ``fit_chs`` (default: ``ch``) on top. Returns the image (e.g. for a colorbar)."""
-    img, extent = srf_retina(row, ch)
+    img, extent = srf_retina(row, ch, align=align)
     if vabsmax is None:
         vabsmax = np.nanmax(np.abs(img)) if np.any(np.isfinite(img)) else 1.
     im = ax.imshow(img, cmap=SRF_CMAP, vmin=-vabsmax, vmax=vabsmax, origin='lower', extent=extent,
@@ -111,7 +118,7 @@ def plot_srf_on_morph(ax, row, skel, ch: str, vabsmax: float | None = None, show
     plot_morph.plot_skel_lines(ax, skel, color=skel_color, lw=skel_lw, alpha=0.9)
     if show_fit:
         for c in fit_chs or [ch]:
-            draw_dog(ax, row, c, min_surround_vol=min_surround_vol)
+            draw_dog(ax, row, c, min_surround_vol=min_surround_vol, align=align)
     ax.set(aspect='equal', xticks=[], yticks=[])
     for spine in ax.spines.values():
         spine.set_visible(False)

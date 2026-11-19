@@ -38,7 +38,7 @@ def predict_z_plane(xy, coef):
     return design @ coef
 
 
-def align_and_place_skel(skel, reg, field, target_xy, direction='em_to_2p'):
+def align_and_place_skel(skel, reg, field, target_xy, direction='em_to_2p', em_affine=True):
     """Rotate `skel` into the target reference frame about its own soma centre
     (see `registration.align_skel`), then translate it so that centre lands
     exactly on `target_xy` -- `align_skel` only rotates/flips, it doesn't move
@@ -52,12 +52,19 @@ def align_and_place_skel(skel, reg, field, target_xy, direction='em_to_2p'):
             skeleton's soma at.
         direction: '2p_to_em' or 'em_to_2p' (default), forwarded to
             `registration.align_skel`.
+        em_affine: For 'em_to_2p', also apply the per-field EM -> 2p stretch /
+            shear (`rf_alignment.em_affine`) about the soma after the rotation
+            (default). False: rotation / flip only.
 
     Returns:
         skeliner.core.Skeleton: The rotated + translated skeleton (a copy;
         `skel` is untouched).
     """
     skel = registration.align_skel(skel, reg, field=field, direction=direction)
+    if em_affine and direction == 'em_to_2p':
+        from eyewire2_functional_analysis import rf_alignment
+        from eyewire2_functional_analysis.skeleton import transform_skel_xy
+        skel = transform_skel_xy(skel, rf_alignment.em_affine(field))
     dx = target_xy[0] - skel.soma.center[0]
     dy = target_xy[1] - skel.soma.center[1]
     skel.nodes[:, 0] += dx

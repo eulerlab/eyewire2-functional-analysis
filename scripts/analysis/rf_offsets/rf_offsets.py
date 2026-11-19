@@ -37,6 +37,10 @@
 # ROIs: `qfilt`, a valid RF, DoG r² >= `R2_MIN` in the chosen channel and its center at least 2 pixels inside the
 # stimulus window. All positions are in um in the retinal frame (x = nasal, y = dorsal).
 #
+# The default alignment correction for the RF / morphology plots of the library (`rf_alignment`: stimulus shift per
+# field from the moving bar + per-field EM -> 2p affine) is estimated at the end and written to
+# `data/registration/rf_alignment.yaml`. All offsets above it are computed without any correction.
+#
 # Outputs (`results/`):
 # - `rf_offsets_per_roi.csv`: per ROI, variant and orientation: positions and offsets.
 # - `rf_offsets_summary.csv`: mean / median / SD / SEM / n of every offset, per field and over all fields, per variant
@@ -57,7 +61,8 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch
 from scipy.spatial import ConvexHull, QhullError
 
-from eyewire2_functional_analysis import data_loader, plot_rf, receptive_fields as rf, registration, space_mapping, style
+from eyewire2_functional_analysis import (data_loader, plot_morph, plot_rf, receptive_fields as rf, registration,
+                                          rf_alignment, space_mapping, style)
 from eyewire2_functional_analysis.stimulus import mouse_cam as mc
 
 style.set_rc_params()
@@ -137,7 +142,8 @@ reg = registration.load_registration(REG_FILE)
 hull = {}
 for _, row in df_morph.iterrows():
     roi_xy = (row.temporal_nasal_pos_um, row.ventral_dorsal_pos_um)
-    skel = space_mapping.align_and_place_skel(row.skel, reg, field=row.field, target_xy=roi_xy)
+    # Uncorrected placement (rotation only): the corrections are estimated below
+    skel = space_mapping.align_and_place_skel(row.skel, reg, field=row.field, target_xy=roi_xy, em_affine=False)
     pts = skel.nodes[:, :2]
     if skel.ntype is not None and np.any(skel.ntype != 2):
         pts = pts[skel.ntype != 2]
@@ -608,14 +614,14 @@ for ax, (_, r) in zip(axs.flat, top.iterrows()):
     key = tuple(r[KEY_COLS])
     row = df_rf_rows.loc[key]
     skel_raw, cell_type = skels[key]
-    skel = space_mapping.align_and_place_skel(skel_raw, reg, field=r.field, target_xy=(0., 0.))
+    skel = space_mapping.align_and_place_skel(skel_raw, reg, field=r.field, target_xy=(0., 0.), em_affine=False)
     xy = skel.nodes[:, :2]
     seg = np.stack([xy[skel.edges[:, 0]], xy[skel.edges[:, 1]]], axis=1)
     ax.add_collection(LineCollection(-seg, colors='0.75', lw=0.4))
     ax.add_collection(LineCollection(seg, colors='k', lw=0.4))
     ax.plot(r.roi_to_hull_dx, r.roi_to_hull_dy, 'D', c=C_HULL, ms=6, mec='k', mew=0.5, zorder=5)
     ax.plot(-r.roi_to_hull_dx, -r.roi_to_hull_dy, 'D', mfc='none', mec=C_HULL, ms=6, mew=1, zorder=5)
-    ell = plot_rf.dog_ellipse(row, r.rf_channel)
+    ell = plot_rf.dog_ellipse(row, r.rf_channel, align=False)
     if ell is not None:
         ax.plot(*ell, c=C_ARROW, lw=1.2, zorder=4)
     ax.plot(r.roi_to_rf_dx, r.roi_to_rf_dy, 'x', c=C_ARROW, ms=7, mew=2, zorder=6)
@@ -910,14 +916,14 @@ for name, (shift_kind, affine) in CORRECTIONS.items():
         key = tuple(r[KEY_COLS])
         row = df_rf_rows.loc[key]
         skel_raw, cell_type = skels[key]
-        skel = space_mapping.align_and_place_skel(skel_raw, reg, field=r.field, target_xy=(0., 0.))
+        skel = space_mapping.align_and_place_skel(skel_raw, reg, field=r.field, target_xy=(0., 0.), em_affine=False)
         lin = em_stretch[r.field] if affine else np.eye(2)
         xy = skel.nodes[:, :2] @ lin.T
         seg = np.stack([xy[skel.edges[:, 0]], xy[skel.edges[:, 1]]], axis=1)
         ax.add_collection(LineCollection(seg, colors='k', lw=0.4))
         hx, hy = lin @ [r.roi_to_hull_dx, r.roi_to_hull_dy]
         ax.plot(hx, hy, 'D', c=C_HULL, ms=6, mec='k', mew=0.5, zorder=5)
-        ell = plot_rf.dog_ellipse(row, r.rf_channel)
+        ell = plot_rf.dog_ellipse(row, r.rf_channel, align=False)
         if ell is not None:
             ax.plot(ell[0] - shift[0], ell[1] - shift[1], c=C_ARROW, lw=1.2, zorder=4)
         if shift_kind is not None:
@@ -952,3 +958,82 @@ for name, (shift_kind, affine) in CORRECTIONS.items():
     for ext in ('pdf', 'png'):
         fig.savefig(os.path.join(FIG_DIR, f'top_cells_corrected_{slug}.{ext}'), dpi=200, bbox_inches='tight')
     plt.show()
+
+# %% [markdown]
+# ## Default alignment: write `rf_alignment.yaml`
+#
+# The default correction is **bar shift + EM affine**: the stimulus shift is the bar-based mean ROI -> RF offset of
+# each field (all ROIs with a reliable bar RF; in the comparison above it was leave-one-out), and the EM affine as
+# above. `plot_rf` and `space_mapping.align_and_place_skel` apply both by default (`align=False` / `em_affine=False`
+# to turn them off).
+
+# %%
+bar_shift = df_shift[df_shift.source == 'bar'].set_index('field')
+alignment = {
+    'meta': {
+        'description': 'Per-field alignment corrections, see eyewire2_functional_analysis/rf_alignment.py',
+        'source': 'scripts/analysis/rf_offsets/rf_offsets.py',
+        'stim_shift': 'mean ROI -> moving-bar RF center offset (um; x = nasal, y = dorsal) of the ROIs with '
+                      f'bar_qidx > {BAR_QIDX_MIN} and repeat SD <= {BAR_REP_SD_MAX:.0f} um; RF positions are '
+                      'corrected by subtracting it',
+        'em_affine': 'linear part of the per-field affine EM nucleus -> 2p ROI position fit, relative to the '
+                     'registration rotation (column-vector convention), applied to the rotated skeleton about its soma',
+    },
+    'fields': {
+        field: {
+            'stim_shift_um': [round(float(bar_shift.loc[field, 'dx']), 2), round(float(bar_shift.loc[field, 'dy']), 2)],
+            'stim_shift_sem_um': [round(float(bar_shift.loc[field, 'sem_dx']), 2),
+                                  round(float(bar_shift.loc[field, 'sem_dy']), 2)],
+            'stim_shift_n': int(bar_shift.loc[field, 'n']),
+            'em_affine': np.round(em_stretch[field], 5).tolist(),
+        } for field in fields},
+}
+rf_alignment.save_alignment(alignment)
+print(f'wrote {rf_alignment.ALIGNMENT_FILE}')
+
+# %% [markdown]
+# ### Top cells with the default alignment
+#
+# Drawn with the library defaults (`space_mapping.align_and_place_skel`, `plot_rf.dog_ellipse`), i.e. as every RF /
+# morphology plot now shows them: skeleton with the EM affine and its hull center, the corrected MC RF (2-sigma DoG
+# center ellipse and center) and the corrected bar RF center.
+
+# %%
+fig, axs = plt.subplots(2, n_col, figsize=(3 * n_col, 6.4), squeeze=False)
+for ax, (_, r) in zip(axs.flat, top.iterrows()):
+    key = tuple(r[KEY_COLS])
+    row = df_rf_rows.loc[key]
+    skel_raw, cell_type = skels[key]
+    skel = space_mapping.align_and_place_skel(skel_raw, reg, field=r.field, target_xy=(0., 0.))
+    plot_morph.plot_skel_lines(ax, skel, color='k', lw=0.4)
+    pts = skel.nodes[:, :2] if skel.ntype is None else skel.nodes[skel.ntype != 2, :2]
+    hx, hy = hull_centroid(pts)
+    ax.plot(hx, hy, 'D', c=C_HULL, ms=6, mec='k', mew=0.5, zorder=5)
+    ell = plot_rf.dog_ellipse(row, r.rf_channel)
+    if ell is not None:
+        ax.plot(*ell, c=C_ARROW, lw=1.2, zorder=4)
+    shift = rf_alignment.stim_shift(r.field)
+    ax.plot(r.roi_to_rf_dx - shift[0], r.roi_to_rf_dy - shift[1], 'x', c=C_ARROW, ms=7, mew=2, zorder=6)
+    if key in bar_by_key.index:
+        b = bar_by_key.loc[key]
+        ax.plot(b.roi_to_bar_dx - shift[0], b.roi_to_bar_dy - shift[1], 's', mfc='none', mec=C_BAR, ms=7, mew=1.5,
+                zorder=6)
+    ax.plot(0, 0, 'o', c='r', ms=4, zorder=6)
+    lim = max(plot_rf.cell_radius(skel), np.abs([r.roi_to_rf_dx, r.roi_to_rf_dy]).max() + 30, 80)
+    ax.set(xlim=(-lim, lim), ylim=(-lim, lim), aspect='equal')
+    ax.set_title(f'{r.field} ROI {r.roi_id}: {cell_type}\ncc {r.mc_rf_best_cc:.2f}, {r.rf_channel}', fontsize=7)
+    ax.tick_params(labelsize=6)
+for ax in axs.flat[len(top):]:
+    ax.axis('off')
+handles = [Line2D([], [], c='k', lw=0.8, label='skeleton (EM affine)'),
+           Line2D([], [], marker='D', ls='', c=C_HULL, mec='k', label='hull center'),
+           Line2D([], [], c=C_ARROW, marker='x', label='MC RF: DoG center, 2σ'),
+           Line2D([], [], marker='s', ls='', mfc='none', mec=C_BAR, label='bar RF center'),
+           Line2D([], [], marker='o', ls='', c='r', label='soma = ROI center')]
+fig.suptitle(f'Top {TOP_N} RFs, default alignment (bar shift + EM affine; µm from the soma, nasal right, dorsal up)',
+             y=1.0)
+plt.tight_layout()
+fig.legend(handles=handles, loc='upper center', ncol=len(handles), frameon=False, fontsize=8, bbox_to_anchor=(0.5, 0.0))
+for ext in ('pdf', 'png'):
+    fig.savefig(os.path.join(FIG_DIR, f'top_cells_aligned.{ext}'), dpi=200, bbox_inches='tight')
+plt.show()

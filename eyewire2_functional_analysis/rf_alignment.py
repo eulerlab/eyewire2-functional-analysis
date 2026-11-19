@@ -1,6 +1,7 @@
 """Per-field alignment corrections between the 2p frame, the visual stimulus and the EM reconstructions.
 
-Estimated in ``scripts/analysis/rf_offsets/rf_offsets.py`` and stored in ``data/registration/rf_alignment.yaml``:
+Estimated in ``scripts/analysis/rf_offsets/rf_offsets.py`` and stored in ``rf_alignment.yaml`` in the shared data-2p
+folder (``data_loader.DATA_REGISTRATION``), where eyewire2-figures reads it too:
 
 - **Stimulus shift** (``stim_shift_um``): where the stimulus was relative to where it is assumed to be (centered on the
   recording field), per field, in um in the retinal frame (x = nasal, y = dorsal). Measured with the moving bar: the
@@ -21,9 +22,9 @@ import warnings
 import numpy as np
 import yaml
 
-from eyewire2_functional_analysis import paths
+from eyewire2_functional_analysis import data_loader
 
-ALIGNMENT_FILE = os.path.join(paths.PROJECT_ROOT, 'data', 'registration', 'rf_alignment.yaml')
+ALIGNMENT_FILE = os.path.join(data_loader.DATA_REGISTRATION, data_loader.RF_ALIGNMENT_FILE)
 
 
 @functools.lru_cache(maxsize=4)

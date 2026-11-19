@@ -35,7 +35,7 @@ style.set_rc_params()
 HERE = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
 FIG_DIR = os.path.join(HERE, 'figures')
 os.makedirs(FIG_DIR, exist_ok=True)
-MC_RF_PATH = os.path.join(data_loader.DATA_ROOT, 'mc_rfs', 'df_eyewire2_roi_level_mc_rf.parquet')
+MC_RF_PATH = os.path.join(data_loader.DATA_2P, data_loader.MC_RF_FILE)
 CH_COLORS = {'green': 'forestgreen', 'uv': 'darkviolet'}
 MIN_SURROUND_VOL = 0.1  # draw the surround ellipse only if its volume relative to the center (w k^2) is at least this
 EXAMPLES = [('GCL0', 5), ('GCL0', 68), ('GCL0', 10), ('GCL1', 46), ('GCL2', 54), ('GCL3', 26), ('GCL4', 63),

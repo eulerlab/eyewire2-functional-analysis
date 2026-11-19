@@ -1,7 +1,7 @@
 # Alignment of 2p ROIs, mouse-cam RFs and EM morphologies
 
 *Analysis: [`rf_offsets.py`](rf_offsets.py). Correction used by the library: [`rf_alignment.py`](../../../eyewire2_functional_analysis/rf_alignment.py),
-stored in [`data/registration/rf_alignment.yaml`](../../../data/registration/rf_alignment.yaml).*
+stored in `rf_alignment.yaml` in the `data-2p` folder of the shared eyewire2-data download.*
 
 ## Summary
 
@@ -192,7 +192,7 @@ are not decisive.
 
 ## 7. Default alignment
 
-`rf_offsets.py` writes `data/registration/rf_alignment.yaml` with, per field, the full-field bar shift (not
+`rf_offsets.py` writes `rf_alignment.yaml` (in `data-2p`) with, per field, the full-field bar shift (not
 leave-one-out) and the EM stretch:
 
 | Field | Stimulus shift (nasal, dorsal) | n |

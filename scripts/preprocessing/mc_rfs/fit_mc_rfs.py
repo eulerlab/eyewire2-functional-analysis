@@ -17,7 +17,8 @@ extended in djimaging). All ROIs of a field are fitted jointly (up to
   correlation of the selected penalty is optimistic). Its STRF is split per channel into sRF and tRF (SVD) and the sRFs
   of both channels are fitted jointly with a DoG (``receptive_fields.fit_srfs``).
 
-The output is one row per ROI, documented in ``df_eyewire2_roi_level_mc_rf.md`` (copied next to the parquet).
+The output is one row per ROI, written to the data-2p folder of the shared eyewire2-data (Hugging Face) folder and
+documented in ``df_eyewire2_roi_level_mc_rf.md`` (copied next to the parquet).
 
 Usage (one job per field, then merge)::
 
@@ -34,7 +35,7 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument('--field', action='append', help='Field(s) to fit, e.g. GCL0 (default: all).')
 parser.add_argument('--merge', action='store_true', help='Only merge the cached results into the parquet.')
 parser.add_argument('--data-2p', default=None, help='data-2p folder (default: data_loader.DATA_2P).')
-parser.add_argument('--out-dir', default=None, help='Output folder (default: <repo>/data/mc_rfs).')
+parser.add_argument('--out-dir', default=None, help='Output folder (default: the data-2p folder).')
 parser.add_argument('--n-cpus', type=int, default=None, help='Limit the number of CPU threads.')
 parser.add_argument('--batch-size', type=int, default=128,
                     help='Max. number of ROIs of a field fitted jointly (lower it if the GPU runs out of memory).')
@@ -61,7 +62,7 @@ from eyewire2_functional_analysis.stimulus import mouse_cam as mc  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_2P = args.data_2p or data_loader.DATA_2P
 MC_ARRAY_DIR = os.path.join(DATA_2P, 'stimuli', 'mouse_cam_movies', 'mc_arrays')
-OUT_DIR = args.out_dir or os.path.join(data_loader.DATA_ROOT, 'mc_rfs')
+OUT_DIR = args.out_dir or DATA_2P  # next to the ROI tables, where data_loader.load_df_mc_rfs reads it
 CACHE_DIR = os.path.join(HERE, 'results', 'cache')
 OUT_NAME = 'df_eyewire2_roi_level_mc_rf'
 KEY_COLS = ['experimenter', 'date', 'exp_num', 'field', 'roi_id']

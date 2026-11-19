@@ -39,7 +39,7 @@
 #
 # The default alignment correction for the RF / morphology plots of the library (`rf_alignment`: stimulus shift per
 # field from the moving bar + per-field EM -> 2p affine) is estimated at the end and written to
-# `data/registration/rf_alignment.yaml`. All offsets above it are computed without any correction.
+# `rf_alignment.yaml` in the shared data-2p folder. All offsets above it are computed without any correction.
 #
 # Outputs (`results/`):
 # - `rf_offsets_per_roi.csv`: per ROI, variant and orientation: positions and offsets.

@@ -268,6 +268,8 @@ def fit_srfs(srfs: np.ndarray, kind: str = 'dog', center_prior_sd: float = 4., c
 
 def movie_to_retina(img: np.ndarray) -> np.ndarray:
     """Reorient a movie-space image ``(rows, cols)`` to the retinal frame, to be shown with ``origin='lower'``:
-    x = nasal (columns), y = dorsal (rows). Assumed (from ``data/stimuli/README.md``): array row -> temporal (so
-    nasal = -row), array column -> ventral (so dorsal = -column), i.e. the transpose with both axes reversed."""
+    x = nasal (columns), y = dorsal (rows). From ``data/stimuli/README.md``: array row -> temporal (so nasal = -row),
+    array column -> ventral (so dorsal = -column), i.e. the transpose with both axes reversed. Checked in
+    ``scripts/analysis/rf_offsets/REPORT.md``: every other flip / rotation fits worse, and the moving-bar RF centers
+    agree with the mouse-cam RF centers per ROI."""
     return img.T[::-1, ::-1]

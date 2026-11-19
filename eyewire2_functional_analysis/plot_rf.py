@@ -3,8 +3,10 @@
 
 All plots are in the retinal frame of ``plot_morph`` (x = nasal, y = dorsal, in um) relative to the soma, which is placed
 at the ROI position. The mouse-cam movie is centered on the field center (``field_temporal_nasal_pos_um``,
-``field_ventral_dorsal_pos_um``). The orientation of the movie in the retinal frame is ``receptive_fields.movie_to_retina``
-(an assumption, see there). ``row`` is a ROI row that has the ``mc_rf_*`` columns and the ROI / field positions.
+``field_ventral_dorsal_pos_um``). The orientation of the movie in the retinal frame is ``receptive_fields.movie_to_retina``;
+it fits better than every other flip / rotation and is confirmed by the moving-bar RF centers
+(``scripts/analysis/rf_offsets/REPORT.md``). ``row`` is a ROI row that has the ``mc_rf_*`` columns and the ROI / field
+positions.
 
 With ``align=True`` (default), RF positions are corrected for the per-field stimulus shift (``rf_alignment.stim_shift``,
 measured with the moving bar); place the skeleton with ``space_mapping.align_and_place_skel`` (EM affine on by default)
